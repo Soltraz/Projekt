@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="560" height="140" viewBox="0 0 560 140" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="REVISIA Logo E">
+  <rect width="100%" height="100%" fill="none"/>
+  <g transform="translate(24,24)">
+    <rect x="0" y="0" width="92" height="92" rx="18" fill="#FFFFFF" stroke="#111111" stroke-width="2"/>
+    <!-- Document page -->
+    <path d="M20 20 H54 L68 34 V72 H20 Z" fill="#111111" opacity="0.06"/>
+    <path d="M54 20 V34 H68" fill="none" stroke="#111111" stroke-width="2"/>
+    <rect x="26" y="40" width="30" height="4" rx="2" fill="#111111"/>
+    <rect x="26" y="50" width="30" height="4" rx="2" fill="#111111" opacity="0.8"/>
+    <rect x="26" y="60" width="22" height="4" rx="2" fill="#111111" opacity="0.6"/>
+    <!-- Import arrow to AI spark -->
+    <path d="M76 70 L88 70" stroke="#D3122C" stroke-width="6" stroke-linecap="round"/>
+    <path d="M82 62 L92 70 L82 78" fill="#D3122C"/>
+    <g transform="translate(74,48)">
+      <circle cx="0" cy="0" r="0" fill="#D3122C"/>
+    </g>
+    <!-- AI spark -->
+    <g transform="translate(72,38)">
+      <path d="M22 22 L26 10 L30 22 L42 26 L30 30 L26 42 L22 30 L10 26 Z" fill="#D3122C"/>
+    </g>
+  </g>
+  <text x="136" y="76" font-size="44" font-weight="800"
+        font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif"
+        fill="#111111">
+    REVIS<tspan fill="#D3122C">IA</tspan>
+  </text>
+  <text x="136" y="106" font-size="16" font-weight="500"
+        font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','Helvetica Neue',Helvetica,Arial,sans-serif"
+        fill="#111111" opacity="0.7">AI für Treuhand & Steuern</text>
+</svg>

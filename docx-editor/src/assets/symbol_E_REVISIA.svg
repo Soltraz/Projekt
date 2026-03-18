@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="104" height="104" viewBox="0 0 104 104" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="REVISIA Symbol E">
+  <rect width="100%" height="100%" fill="none"/>
+  <rect x="6" y="6" width="92" height="92" rx="20" fill="#FFFFFF" stroke="#111111" stroke-width="3"/>
+  <!-- Page -->
+  <path d="M26 26 H58 L72 40 V78 H26 Z" fill="#111111" opacity="0.06"/>
+  <path d="M58 26 V40 H72" fill="none" stroke="#111111" stroke-width="2"/>
+  <rect x="32" y="46" width="32" height="5" rx="2.5" fill="#111111"/>
+  <rect x="32" y="56" width="32" height="5" rx="2.5" fill="#111111" opacity="0.8"/>
+  <rect x="32" y="66" width="24" height="5" rx="2.5" fill="#111111" opacity="0.6"/>
+  <!-- Import arrow -->
+  <path d="M78 68 L90 68" stroke="#D3122C" stroke-width="6" stroke-linecap="round"/>
+  <path d="M84 60 L94 68 L84 76" fill="#D3122C"/>
+  <!-- AI spark -->
+  <g transform="translate(72,38)">
+    <path d="M10 24 L14 12 L18 24 L30 28 L18 32 L14 44 L10 32 L-2 28 Z" fill="#D3122C"/>
+  </g>
+</svg>

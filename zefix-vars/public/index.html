@@ -1,0 +1,152 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Handelsregister Variablen</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <div id="loading" class="loading" hidden>
+    <div class="spinner"></div>
+    <div class="ltxt">Daten werden geladen und mit KI ausgewertet…</div>
+  </div>
+
+  <main class="wrap">
+    <h1>Handelsregister Variablen</h1>
+
+    <input id="q" class="input" placeholder="Firma suchen (mind. 3 Zeichen) …" autocomplete="off" />
+    <ul id="results" class="list"></ul>
+
+    <section id="vars" class="card" hidden>
+      <h2>9 Variablen</h2>
+      <table id="tbl"></table>
+    </section>
+
+    <section id="peopleBox" class="card" hidden>
+      <h2>Personen (Personalangaben &amp; SOGC)</h2>
+      <table class="people">
+        <thead>
+          <tr><th>Personenangaben</th><th>Funktion</th><th>Zeichnungsart</th><th></th></tr>
+        </thead>
+        <tbody id="people"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <script>
+    const q = document.getElementById("q");
+    const results = document.getElementById("results");
+    const varsBox = document.getElementById("vars");
+    const tbl = document.getElementById("tbl");
+    const peopleBox = document.getElementById("peopleBox");
+    const people = document.getElementById("people");
+    const loading = document.getElementById("loading");
+
+    let tmr;
+    q.addEventListener("input", () => {
+      clearTimeout(tmr);
+      const name = q.value.trim();
+      if (name.length < 3) { results.innerHTML = ""; return; }
+      tmr = setTimeout(() => doSearch(name), 220);
+    });
+
+    async function doSearch(name) {
+      results.innerHTML = `<li class="muted">Suche…</li>`;
+      const r = await fetch(`/api/search?name=${encodeURIComponent(name)}`);
+      if (!r.ok) { results.innerHTML = `<li class="error">Fehler ${r.status}</li>`; return; }
+      const list = await r.json();
+      if (!Array.isArray(list) || !list.length) { results.innerHTML = `<li class="muted">Keine Treffer</li>`; return; }
+      results.innerHTML = list.map(c => `
+        <li class="item" data-uid="${c.uid}">
+          <div class="title">${esc(c.name || "")}</div>
+          <div class="sub">${esc(c.uid || "")} · ${esc(c.legalForm || "")} · ${esc(c.legalSeat || "")}</div>
+        </li>`).join("");
+      results.querySelectorAll(".item").forEach(li =>
+        li.addEventListener("click", () => build(li.getAttribute("data-uid")))
+      );
+    }
+
+    async function build(uid) {
+      setLoading(true);
+      varsBox.hidden = true; peopleBox.hidden = true; results.innerHTML = "";
+      try {
+        const r1 = await fetch(`/api/vars/build?uid=${encodeURIComponent(uid)}`);
+        if (!r1.ok) { alert(`Fehler ${r1.status}`); setLoading(false); return; }
+        const payload = await r1.json();
+        const v = payload.vars || payload;
+        renderVars(v);
+        renderPeople(payload.persons || []);
+        // sanfter Fokus nach oben
+        window.scrollTo({ top: varsBox.offsetTop - 12, behavior: "smooth" });
+      } catch (e) {
+        alert(e);
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function renderVars(v) {
+      const rows = [
+        ["{CompanyName}", v.CompanyName || ""],
+        ["{Adresse}", v.Adresse || ""],
+        ["{PLZ}", v.PLZ || ""],
+        ["{ORT}", v.ORT || ""],
+        ["{Stammkapital}", v.Stammkapital || ""],
+        ["{Stammanteil}", v.Stammanteil || ""],
+        ["{UID}", v.UID || ""],
+        ["{Gesellschafter}", v.Gesellschafter || ""],
+        ["{Gesellschafter_ort}", v.Gesellschafter_ort || ""]
+      ];
+      tbl.innerHTML = `
+        <thead><tr><th>Platzhalter</th><th>Wert</th></tr></thead>
+        <tbody>${rows.map(([k,val])=>`<tr><td class="key">${esc(k)}</td><td>${esc(val)}</td></tr>`).join("")}</tbody>
+      `;
+      varsBox.hidden = false;
+    }
+
+    function renderPeople(list) {
+      if (!Array.isArray(list) || !list.length) { peopleBox.hidden = true; return; }
+      people.innerHTML = list.map(p => `
+        <tr>
+          <td><div class="strong">${esc(p.anzeige || p.name)}</div></td>
+          <td>${esc(p.funktion || "")}</td>
+          <td>${esc(p.signatur || "")}</td>
+          <td><button class="save" data-name="${escAttr(p.name)}" data-anz="${escAttr(p.anzeige)}">als Gesellschafter speichern</button></td>
+        </tr>`).join("");
+      people.querySelectorAll(".save").forEach(btn => btn.addEventListener("click", () => savePerson(btn.dataset.name, btn.dataset.anz)));
+      peopleBox.hidden = false;
+    }
+
+    async function savePerson(name, anzeige) {
+      setLoading(true);
+      try {
+        const r = await fetch("/api/vars/person", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name, anzeige })
+        });
+        if (!r.ok) { alert(`Fehler ${r.status}`); return; }
+        const v = await r.json();
+        renderVars(v);
+        window.scrollTo({ top: document.getElementById("tbl").offsetTop - 12, behavior: "smooth" });
+      } finally {
+        setLoading(false);
+      }
+    }
+
+    function setLoading(on) {
+      loading.hidden = !on;
+    }
+
+    // FIX: Apostroph korrekt escapen, damit 33'922'404 NICHT zu "undefined" wird
+    function esc(s){
+      const map = {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;', "'": '&#39;'};
+      return String(s ?? "").replace(/[&<>"']/g, c => map[c]);
+    }
+    function escAttr(s){
+      return String(s ?? "").replace(/"/g, "&quot;").replace(/'/g, "&#39;");
+    }
+  </script>
+</body>
+</html>

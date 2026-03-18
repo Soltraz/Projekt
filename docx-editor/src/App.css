@@ -1,0 +1,17 @@
+/* src/App.css */
+/* 
+  Most global styles are now in index.css.
+  Component-specific styles are in Dashboard.css and CompanyPage.css.
+  This file is kept for any future app-wide specific styles that don't fit in index.css.
+*/
+
+#root {
+  /* Reset default Vite styles that conflict with our layout */
+  max-width: none;
+  margin: 0;
+  padding: 0;
+  text-align: left;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}

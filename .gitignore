@@ -1,0 +1,97 @@
+########################################
+# OS / Editor
+########################################
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.json
+!.vscode/launch.json
+
+.idea/
+*.iml
+
+########################################
+# Logs
+########################################
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+########################################
+# Node / Build
+########################################
+**/node_modules/
+**/dist/
+**/build/
+**/out/
+**/.cache/
+**/.parcel-cache/
+**/.eslintcache
+
+########################################
+# TypeScript
+########################################
+*.tsbuildinfo
+
+########################################
+# Env / Secrets
+########################################
+**/.env
+**/.env.*
+!**/.env.example
+
+# Vite lokale Env
+**/.env.local
+**/.env.*.local
+
+########################################
+# Runtime / Uploads / Generated data
+########################################
+# Backend temp uploads
+zefix-vars/tmp_uploads/
+zefix-vars/uploads/
+zefix-vars/tmp/
+zefix-vars/temp/
+
+# Backend gespeicherte Laufzeitdaten (im Prototyp generated)
+zefix-vars/data/
+zefix-vars/data/**
+
+# Falls du spaeter bewusst Demo-Daten versionieren willst:
+# -> dann die beiden Zeilen oben entfernen und stattdessen selektiv ignorieren (z.B. nur missing/vars)
+
+########################################
+# Generated documents / exports
+########################################
+# App erzeugte PDFs/Exports
+**/*.pdf
+**/*.docx
+**/*.zip
+
+# Falls du ZIPs im Repo behalten willst, loesche die naechste Zeile:
+.zip
+
+# Spezifische Output Ordner (falls PDFs nicht global ignoriert werden sollen)
+# zefix-vars/public/marzo/data/
+
+########################################
+# Test artifacts
+########################################
+coverage/
+.nyc_output/
+playwright-report/
+test-results/
+
+########################################
+# Misc
+########################################
+*.swp
+*.swo
+*.bak
+*.old
+*.orig
