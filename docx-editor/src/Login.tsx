@@ -35,7 +35,8 @@ export default function Login() {
     }
   }
 
-    return (
+
+  return (
     <div className="login-page">
         <div className="login-card">
         <img src={symbol} alt="REVISIA" className="login-logo" />

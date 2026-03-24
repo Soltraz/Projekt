@@ -72,6 +72,10 @@ const ALLOWED = (process.env.ALLOWED_ORIGINS || "http://localhost:5173")
   .map((s) => s.trim())
   .filter(Boolean);
 
+
+  const pool = require("./db");
+
+
 app.use(
   cors({
     origin(origin, cb) {
@@ -867,7 +871,12 @@ app.get("/api/templates", async (_req, res) => {
 });
 
 app.get("/api/db-ping", async (_req, res) => {
-  return res.json({ ok: true, simulated: true, message: "DB ist simuliert (JSON Store)" });
+  try {
+    const [rows] = await pool.query("SELECT 1 AS ok");
+    return res.json({ ok: true, rows });
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: String(e) });
+  }
 });
 
 app.post("/api/login", async (req, res) => {
