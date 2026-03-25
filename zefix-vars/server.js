@@ -194,150 +194,59 @@ function normalizeCompanyShape(c) {
   };
 }
 
-async function readCompanies() {
-  const arr = await readJsonFile(COMPANIES_FILE, []);
-  if (!Array.isArray(arr)) return [];
-  return arr.map(normalizeCompanyShape).filter((c) => c.id);
-}
 
 async function writeCompanies(list) {
   await writeJsonFileAtomic(COMPANIES_FILE, Array.isArray(list) ? list : []);
 }
 
 async function listCompanies() {
-  const companies = await readCompanies();
-  companies.sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)));
-  return companies;
+  return dbListCompanies();
 }
 
 async function getCompany(companyId) {
-  const companies = await readCompanies();
-  return companies.find((c) => c.id === companyId) || null;
+  return dbGetCompany(companyId);
 }
 
 async function upsertCompany(entry) {
-  const companies = await readCompanies();
-  const idx = companies.findIndex((c) => c.id === entry.id);
-  const normalized = normalizeCompanyShape(entry);
-
-  if (idx >= 0) {
-    const existing = companies[idx];
-    const merged = normalizeCompanyShape({
-      ...existing,
-      ...normalized,
-      profile: { ...(existing.profile || {}), ...(normalized.profile || {}) },
-      projects: Array.isArray(normalized.projects) && normalized.projects.length ? normalized.projects : existing.projects,
-      fibu: normalized.fibu !== undefined ? normalized.fibu : existing.fibu,
-      updatedAt: nowIso(),
-    });
-    companies[idx] = merged;
-  } else {
-    companies.push(normalizeCompanyShape({ ...normalized, createdAt: normalized.createdAt || nowIso(), updatedAt: nowIso() }));
-  }
-
-  await writeCompanies(companies);
+  return dbUpsertCompany(entry);
 }
 
-async function deleteCompany(companyId, { purgeVars } = { purgeVars: false }) {
-  const companies = await readCompanies();
-  const c = companies.find((x) => x.id === companyId);
-  if (!c) return { ok: false, reason: "not found" };
-
-  const remaining = companies.filter((x) => x.id !== companyId);
-  await writeCompanies(remaining);
-
-  try { await fs.unlink(getMissingPath(companyId)); } catch {}
-
-  if (purgeVars) {
-    try { await fs.unlink(getVarsPath(companyId)); } catch {}
-  }
-
-  const pc = await readJsonFile(PROJECT_CONTENTS_FILE, {});
-  if (pc && typeof pc === "object") {
-    const next = { ...pc };
-    for (const p of (c.projects || [])) {
-      if (p?.id) delete next[p.id];
-    }
-    await writeJsonFileAtomic(PROJECT_CONTENTS_FILE, next);
-  }
-
-  return { ok: true };
-}
 
 function getVarsPath(companyId) {
   return path.join(VARS_DIR, `company-${companyId}.json`);
 }
 
-async function dbLoadVars(companyId) {
-  if (!companyId) return {};
-  const data = await readJsonFile(getVarsPath(companyId), {});
-  return data && typeof data === "object" ? data : {};
+async function updateCompany(companyId, payload) {
+  return dbUpdateCompany(companyId, payload);
 }
 
-async function dbSaveVars(companyId, vars) {
-  if (!companyId) return;
-  await writeJsonFileAtomic(getVarsPath(companyId), vars && typeof vars === "object" ? vars : {});
-}
 
-async function updateCompanyProfileAndUid(companyId, { uidCanon, uidDisplay, profilePatch }) {
-  const company = await getCompany(companyId);
-  if (!company) return;
-
-  const next = normalizeCompanyShape({
-    ...company,
-    uidCanon: uidCanon || company.uidCanon || null,
-    uid: uidDisplay || company.uid || null,
-    profile: { ...(company.profile || {}), ...(profilePatch || {}) },
-    updatedAt: nowIso(),
-  });
-
-  await upsertCompany(next);
+async function updateCompanyProfileAndUid(companyId, payload) {
+return dbUpdateCompanyProfileAndUid(companyId, payload)
 }
 
 async function updateCompanyFibu(companyId, fibuPayload) {
-  const company = await getCompany(companyId);
-  if (!company) return;
-
-  const next = normalizeCompanyShape({
-    ...company,
-    fibu: fibuPayload ? fibuPayload : null,
-    updatedAt: nowIso(),
-  });
-
-  await upsertCompany(next);
+return dbUpdateCompanyFibu(companyId, fibuPayload)
 }
 
-async function createProject({ companyId, title, status }) {
-  const company = await getCompany(companyId);
-  if (!company) return null;
+async function updateProject(companyId, projectId, payload) {
+  return dbUpdateProject(companyId, projectId, payload);
+}
 
-  const id = "prj_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
-  const t = nowIso();
-  const prj = { id, title: String(title || ""), status: String(status || "In Arbeit"), createdAt: t, updatedAt: t };
+async function createProject(payload) {
+return dbCreateProject(payload)
+}
 
-  const next = normalizeCompanyShape({
-    ...company,
-    projects: [prj, ...(company.projects || [])],
-    updatedAt: t,
-  });
-
-  await upsertCompany(next);
-  return id;
+async function deleteProject(companyId, projectId) {
+  return dbDeleteProject(companyId, projectId);
 }
 
 async function getProjectContent(projectId) {
-  if (!projectId) return "";
-  const pc = await readJsonFile(PROJECT_CONTENTS_FILE, {});
-  if (!pc || typeof pc !== "object") return "";
-  return typeof pc[projectId] === "string" ? pc[projectId] : "";
+return dbGetProjectContent(projectId)
 }
 
-async function upsertProjectContent({ projectId, html }) {
-  if (!projectId) return;
-  const pc = await readJsonFile(PROJECT_CONTENTS_FILE, {});
-  const next = (pc && typeof pc === "object") ? pc : {};
-  next[projectId] = String(html || "");
-  await writeJsonFileAtomic(PROJECT_CONTENTS_FILE, next);
+async function upsertProjectContent(payload) {
+return dbUpsertProjectContent(payload)
 }
 
 function getMissingPath(companyId) {
@@ -359,6 +268,266 @@ async function writeMissing(companyId, payload) {
   if (!companyId) return;
   await fs.mkdir(path.dirname(getMissingPath(companyId)), { recursive: true });
   await fs.writeFile(getMissingPath(companyId), JSON.stringify(payload, null, 2), "utf8");
+}
+
+//db load/save
+
+async function dbLoadVars(companyId) {
+  if (!companyId) return {};
+  const [rows] = await pool.query(
+    "SELECT vars_json FROM company_vars WHERE company_id=? LIMIT 1",
+    [companyId]
+  );
+  if (!rows.length) return {};
+
+  try {
+    const raw = rows[0].vars_json;
+    return typeof raw === "string" ? JSON.parse(raw) : (raw || {});
+  } catch {
+    return {};
+  }
+}
+
+
+async function dbSaveVars(companyId, vars) {
+  if (!companyId) return;
+  await pool.query(
+    `INSERT INTO company_vars (company_id, vars_json)
+     VALUES (?, ?)
+     ON DUPLICATE KEY UPDATE vars_json=VALUES(vars_json)`,
+    [companyId, JSON.stringify(vars || {})]
+  );
+}
+
+
+//db companies/projects
+
+function rowToCompany(r) {
+  return {
+    id: r.id,
+    name: r.name,
+    uid: r.uid_display || null,
+    uidCanon: r.uid_canon || null,
+    archived: !!r.archived,
+    profile: r.profile_json ? (typeof r.profile_json === "string" ? JSON.parse(r.profile_json) : r.profile_json) : {},
+    fibu: r.fibu_json ? (typeof r.fibu_json === "string" ? JSON.parse(r.fibu_json) : r.fibu_json) : null,
+    createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+    updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : r.updated_at,
+    projects: [],
+  };
+}
+
+async function dbProjectsByCompanyIds(companyIds = []) {
+  const map = new Map();
+  if (!companyIds.length) return map;
+
+  const placeholders = companyIds.map(() => "?").join(",");
+  const [rows] = await pool.query(
+    `SELECT id, company_id, title, status, created_at, updated_at
+     FROM projects
+     WHERE company_id IN (${placeholders})
+     ORDER BY created_at DESC`,
+    companyIds
+  );
+
+  for (const r of rows) {
+    const arr = map.get(r.company_id) || [];
+    arr.push({
+      id: r.id,
+      title: r.title || "",
+      status: r.status || "In Arbeit",
+      createdAt: r.created_at instanceof Date ? r.created_at.toISOString() : r.created_at,
+      updatedAt: r.updated_at instanceof Date ? r.updated_at.toISOString() : r.updated_at,
+    });
+    map.set(r.company_id, arr);
+  }
+  return map;
+}
+
+
+async function dbListCompanies() {
+  const [rows] = await pool.query(
+    `SELECT id,name,uid_display,uid_canon,archived,profile_json,fibu_json,created_at,updated_at
+     FROM companies
+     ORDER BY created_at DESC`
+  );
+  const companies = rows.map(rowToCompany);
+  const ids = companies.map((c) => c.id);
+  const projectsMap = await dbProjectsByCompanyIds(ids);
+  for (const c of companies) c.projects = projectsMap.get(c.id) || [];
+  return companies;
+}
+
+
+async function dbGetCompany(companyId) {
+  const [rows] = await pool.query(
+    `SELECT id,name,uid_display,uid_canon,archived,profile_json,fibu_json,created_at,updated_at
+     FROM companies
+     WHERE id=? LIMIT 1`,
+    [companyId]
+  );
+  if (!rows.length) return null;
+  const c = rowToCompany(rows[0]);
+  const pm = await dbProjectsByCompanyIds([companyId]);
+  c.projects = pm.get(companyId) || [];
+  return c;
+}
+
+
+async function dbUpsertCompany(entry) {
+  const createdAt = entry.createdAt ? new Date(entry.createdAt) : new Date();
+  const updatedAt = new Date();
+  await pool.query(
+    `INSERT INTO companies
+       (id,name,uid_display,uid_canon,archived,profile_json,fibu_json,created_at,updated_at)
+     VALUES
+       (?,?,?,?,?,?,?, ?, ?)
+     ON DUPLICATE KEY UPDATE
+       name=VALUES(name),
+       uid_display=VALUES(uid_display),
+       uid_canon=VALUES(uid_canon),
+       archived=VALUES(archived),
+       profile_json=VALUES(profile_json),
+       fibu_json=VALUES(fibu_json),
+       updated_at=VALUES(updated_at)`,
+    [
+      entry.id,
+      entry.name,
+      entry.uid || null,
+      entry.uidCanon || null,
+      entry.archived ? 1 : 0,
+      JSON.stringify(entry.profile || {}),
+      entry.fibu ? JSON.stringify(entry.fibu) : null,
+      createdAt,
+      updatedAt,
+    ]
+  );
+}
+
+async function dbUpdateProject(companyId, projectId, { title, status }) {
+  const [rows] = await pool.query(
+    `SELECT id, title, status
+     FROM projects
+     WHERE id=? AND company_id=? LIMIT 1`,
+    [projectId, companyId]
+  );
+
+  if (!rows.length) return false;
+
+  const current = rows[0];
+
+  await pool.query(
+    `UPDATE projects
+     SET title=?, status=?, updated_at=NOW()
+     WHERE id=? AND company_id=?`,
+    [
+      title != null && String(title).trim() !== "" ? String(title).trim() : current.title,
+      status != null && String(status).trim() !== "" ? String(status).trim() : current.status,
+      projectId,
+      companyId,
+    ]
+  );
+
+  return true;
+}
+
+async function dbUpdateCompany(companyId, { name, archived }) {
+  const [rows] = await pool.query(
+    `SELECT id, name, archived
+     FROM companies
+     WHERE id=? LIMIT 1`,
+    [companyId]
+  );
+
+  if (!rows.length) return false;
+
+  const current = rows[0];
+
+  await pool.query(
+    `UPDATE companies
+     SET name=?, archived=?, updated_at=NOW()
+     WHERE id=?`,
+    [
+      name != null && String(name).trim() !== "" ? String(name).trim() : current.name,
+      archived != null ? (archived ? 1 : 0) : current.archived,
+      companyId,
+    ]
+  );
+
+  return true;
+}
+
+
+async function dbUpdateCompanyProfileAndUid(companyId, { uidCanon, uidDisplay, profilePatch }) {
+  const company = await dbGetCompany(companyId);
+  if (!company) return;
+
+  const profile = { ...(company.profile || {}), ...(profilePatch || {}) };
+  await pool.query(
+    `UPDATE companies
+     SET uid_canon=?, uid_display=?, profile_json=?, updated_at=NOW()
+     WHERE id=?`,
+    [uidCanon || company.uidCanon || null, uidDisplay || company.uid || null, JSON.stringify(profile), companyId]
+  );
+}
+
+
+async function dbUpdateCompanyFibu(companyId, fibuPayload) {
+  await pool.query(
+    `UPDATE companies SET fibu_json=?, updated_at=NOW() WHERE id=?`,
+    [fibuPayload ? JSON.stringify(fibuPayload) : null, companyId]
+  );
+}
+
+
+async function dbCreateProject({ companyId, title, status }) {
+  const id = "prj_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
+  await pool.query(
+    `INSERT INTO projects (id, company_id, title, status) VALUES (?,?,?,?)`,
+    [id, companyId, title, status || "In Arbeit"]
+  );
+  return id;
+}
+
+async function dbDeleteProject(companyId, projectId) {
+  const [rows] = await pool.query(
+    `SELECT id
+     FROM projects
+     WHERE id=? AND company_id=? LIMIT 1`,
+    [projectId, companyId]
+  );
+
+  if (!rows.length) return false;
+
+  await pool.query(
+    `DELETE FROM project_contents WHERE project_id=?`,
+    [projectId]
+  );
+
+  await pool.query(
+    `DELETE FROM projects WHERE id=? AND company_id=?`,
+    [projectId, companyId]
+  );
+
+  return true;
+}
+
+async function dbUpsertProjectContent({ projectId, html }) {
+  await pool.query(
+    `INSERT INTO project_contents (project_id, html)
+     VALUES (?, ?)
+     ON DUPLICATE KEY UPDATE html=VALUES(html)`,
+    [projectId, html]
+  );
+}
+
+
+async function dbGetProjectContent(projectId) {
+  const [rows] = await pool.query(
+    `SELECT html FROM project_contents WHERE project_id=? LIMIT 1`,
+    [projectId]
+  );
+  return rows.length ? (rows[0].html || "") : "";
 }
 
 async function jget(url, init = {}) {
@@ -1189,7 +1358,7 @@ app.get("/api/vars/build", async (req, res) => {
 
     let companyId = id;
     if (!companyId) {
-      const companies = await readCompanies();
+      const companies = await listCompanies();
       const c = companies.find((x) => (x.uidCanon || "") === uid) || null;
       companyId = c ? c.id : "";
     }
@@ -1537,18 +1706,128 @@ app.get("/api/companies/:id/fibu", async (req, res) => {
   }
 });
 
+app.patch("/api/companies/:id", async (req, res) => {
+  try {
+    const companyId = String(req.params.id || "").trim();
+    if (!companyId) {
+      return res.status(400).json({ ok: false, error: "companyId fehlt" });
+    }
+
+    const { name, archived } = req.body || {};
+
+    if (name !== undefined && String(name).trim().length < 2) {
+      return res.status(400).json({ ok: false, error: "Firmenname zu kurz" });
+    }
+
+    const updated = await updateCompany(companyId, { name, archived });
+
+    if (!updated) {
+      return res.status(404).json({ ok: false, error: "not found" });
+    }
+
+    const company = await getCompany(companyId);
+    return res.json({ ok: true, company });
+  } catch (e) {
+    console.error("PATCH /api/companies/:id failed", e);
+    return res.status(500).json({ ok: false, error: "update failed" });
+  }
+});
+
 app.delete("/api/companies/:id", async (req, res) => {
   const companyId = String(req.params.id || "").trim();
   if (!companyId) return res.status(400).json({ ok: false, error: "companyId fehlt" });
 
   const purgeVars = String(req.query.purgeVars || "").toLowerCase() === "true";
 
+  const conn = await pool.getConnection();
   try {
-    const r = await deleteCompany(companyId, { purgeVars });
-    if (!r.ok) return res.status(404).json({ ok: false, error: "not found", id: companyId });
+    await conn.beginTransaction();
+
+    const [cRows] = await conn.query(`SELECT id FROM companies WHERE id=? LIMIT 1`, [companyId]);
+    if (!cRows.length) {
+      await conn.rollback();
+      return res.status(404).json({ ok: false, error: "not found", id: companyId });
+    }
+
+    const [pRows] = await conn.query(`SELECT id FROM projects WHERE company_id=?`, [companyId]);
+    const projectIds = pRows.map(r => r.id).filter(Boolean);
+
+    if (projectIds.length) {
+      const ph = projectIds.map(() => "?").join(",");
+      await conn.query(`DELETE FROM project_contents WHERE project_id IN (${ph})`, projectIds);
+    }
+
+    await conn.query(`DELETE FROM projects WHERE company_id=?`, [companyId]);
+
+    if (purgeVars) {
+      await conn.query(`DELETE FROM company_vars WHERE company_id=?`, [companyId]);
+    }
+
+    await conn.query(`DELETE FROM companies WHERE id=?`, [companyId]);
+
+    await conn.commit();
+
+    try { await fs.unlink(getMissingPath(companyId)); } catch {}
+
     return res.json({ ok: true, deleted: companyId, purged: purgeVars });
   } catch (e) {
+    try { await conn.rollback(); } catch {}
     console.error("DELETE /api/companies failed", e);
+    return res.status(500).json({ ok: false, error: "delete failed" });
+  } finally {
+    conn.release();
+  }
+});
+
+app.patch("/api/companies/:id/projects/:projectId", async (req, res) => {
+  try {
+    const companyId = String(req.params.id || "").trim();
+    const projectId = String(req.params.projectId || "").trim();
+
+    if (!companyId || !projectId) {
+      return res.status(400).json({ ok: false, error: "companyId oder projectId fehlt" });
+    }
+
+    const { title, status } = req.body || {};
+
+    if (title !== undefined && String(title).trim().length < 2) {
+      return res.status(400).json({ ok: false, error: "Projekttitel zu kurz" });
+    }
+
+    const updated = await updateProject(companyId, projectId, { title, status });
+
+    if (!updated) {
+      return res.status(404).json({ ok: false, error: "project not found" });
+    }
+
+    const company = await getCompany(companyId);
+    const project = (company?.projects || []).find((p) => p.id === projectId) || null;
+
+    return res.json({ ok: true, project });
+  } catch (e) {
+    console.error("PATCH /api/companies/:id/projects/:projectId failed", e);
+    return res.status(500).json({ ok: false, error: "update failed" });
+  }
+});
+
+app.delete("/api/companies/:id/projects/:projectId", async (req, res) => {
+  try {
+    const companyId = String(req.params.id || "").trim();
+    const projectId = String(req.params.projectId || "").trim();
+
+    if (!companyId || !projectId) {
+      return res.status(400).json({ ok: false, error: "companyId oder projectId fehlt" });
+    }
+
+    const deleted = await deleteProject(companyId, projectId);
+
+    if (!deleted) {
+      return res.status(404).json({ ok: false, error: "project not found" });
+    }
+
+    return res.json({ ok: true, deleted: projectId });
+  } catch (e) {
+    console.error("DELETE /api/companies/:id/projects/:projectId failed", e);
     return res.status(500).json({ ok: false, error: "delete failed" });
   }
 });
