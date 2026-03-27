@@ -473,9 +473,19 @@ async function dbUpdateCompanyProfileAndUid(companyId, { uidCanon, uidDisplay, p
 
 
 async function dbUpdateCompanyFibu(companyId, fibuPayload) {
+  const company = await dbGetCompany(companyId);
+  if (!company) return;
+
+  const mergedFibu = {
+    ...(company.fibu || {}),
+    ...(fibuPayload || {}),
+  };
+
   await pool.query(
-    `UPDATE companies SET fibu_json=?, updated_at=NOW() WHERE id=?`,
-    [fibuPayload ? JSON.stringify(fibuPayload) : null, companyId]
+    `UPDATE companies
+     SET fibu_json=?, updated_at=NOW()
+     WHERE id=?`,
+    [Object.keys(mergedFibu).length ? JSON.stringify(mergedFibu) : null, companyId]
   );
 }
 
@@ -530,6 +540,134 @@ async function dbGetProjectContent(projectId) {
   return rows.length ? (rows[0].html || "") : "";
 }
 
+function makeId(prefix) {
+  return `${prefix}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+async function dbCreateUploadMeta({
+  id,
+  companyId,
+  projectId = null,
+  docType,
+  originalName,
+  storedPath,
+  fileSize = null,
+  mimeType = null,
+}) {
+  await pool.query(
+    `INSERT INTO project_uploads
+      (id, company_id, project_id, doc_type, original_name, stored_path, file_size, mime_type)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [
+      id,
+      companyId,
+      projectId,
+      docType,
+      originalName,
+      storedPath,
+      fileSize,
+      mimeType,
+    ]
+  );
+}
+
+async function dbCreateRun({
+  id,
+  companyId,
+  projectId = null,
+  phase,
+  status = "running",
+}) {
+  await pool.query(
+    `INSERT INTO project_runs
+      (id, company_id, project_id, phase, status)
+     VALUES (?, ?, ?, ?, ?)`,
+    [id, companyId, projectId, phase, status]
+  );
+}
+
+async function dbFinishRun(runId, status, result = null) {
+  await pool.query(
+    `UPDATE project_runs
+     SET status = ?, ended_at = NOW(), result_json = ?
+     WHERE id = ?`,
+    [status, result ? JSON.stringify(result) : null, runId]
+  );
+}
+
+async function dbCreateRawResult({
+  id,
+  companyId,
+  projectId = null,
+  runId = null,
+  source,
+  payload,
+}) {
+  await pool.query(
+    `INSERT INTO workflow_results_raw
+      (id, company_id, project_id, run_id, source, payload_json)
+     VALUES (?, ?, ?, ?, ?, ?)`,
+    [id, companyId, projectId, runId, source, JSON.stringify(payload || {})]
+  );
+}
+
+function mapWorkflowPayloadToVars(s) {
+  const has = (v) =>
+    v !== undefined &&
+    v !== null &&
+    (typeof v === "number" || String(v).trim() !== "");
+
+  const asTxt = (v) => (v == null ? "" : String(v).trim());
+
+  const patch = {};
+
+  if (has(s.CompanyName) || has(s.company)) {
+    patch.CompanyName = asTxt(s.CompanyName ?? s.company);
+  }
+
+  if (has(s.Adresse) || has(s.address)) {
+    patch.Adresse = asTxt(s.Adresse ?? s.address);
+  }
+
+  if (has(s.PLZ) || has(s.zip)) {
+    patch.PLZ = asTxt(s.PLZ ?? s.zip);
+  }
+
+  if (has(s.ORT) || has(s.city) || has(s.Ort)) {
+    patch.ORT = asTxt(s.ORT ?? s.city ?? s.Ort);
+  }
+
+  if (has(s.UID) || has(s.uid)) {
+    patch.UID = asTxt(s.UID ?? s.uid);
+  }
+
+  if (has(s.currentYear) || has(s.CurrentYear)) {
+    patch.currentYear = asTxt(s.currentYear ?? s.CurrentYear);
+  }
+
+  const gName = s.gesellschafter ?? s.Gesellschafter ?? s.partners;
+  if (has(gName)) {
+    patch.gesellschafter = asTxt(gName);
+  }
+
+  if (has(s.Gesellschafter_ort) || has(s.partners_city)) {
+    patch.Gesellschafter_ort = asTxt(s.Gesellschafter_ort ?? s.partners_city);
+  }
+
+  const rk = s.stammkapital ?? s.Stammkapital;
+  if (has(rk)) {
+    patch.Stammkapital = asTxt(rk);
+  }
+
+  const su = s.Stammanteil ?? s.share_unit;
+  if (has(su)) {
+    patch.Stammanteil = asTxt(su);
+  }
+
+  return patch;
+}
+
+
 async function jget(url, init = {}) {
   if (!AUTH) throw new Error("ZEFIX_USER/ZEFIX_PASS fehlen");
   const r = await fetchFn(url, {
@@ -577,6 +715,60 @@ function fixOrtAbbrev(ort, originalText) {
   }
   return ort;
 }
+
+
+function extractPlaceholdersFromHtml(html) {
+  const src = String(html || "");
+  const re = /\{([A-Za-z0-9_]+)\}/g;
+  const out = [];
+  const seen = new Set();
+
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    const key = String(m[1] || "").trim();
+    if (!key) continue;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(key);
+  }
+
+  return out;
+}
+
+function computeMissingFromVars(vars, relevant) {
+  const values = vars && typeof vars === "object" ? vars : {};
+  const rel = Array.isArray(relevant) ? relevant : [];
+
+  const missing = rel.filter((key) => {
+    const v = values[key];
+    return !(
+      v !== undefined &&
+      v !== null &&
+      (typeof v === "number" || String(v).trim() !== "")
+    );
+  });
+
+  return {
+    relevant: rel,
+    missing,
+    missing_count: missing.length,
+    values,
+    invalid: [],
+  };
+}
+
+async function buildMissingFromProject(companyId, projectId) {
+  const html = await dbGetProjectContent(projectId);
+  const relevant = extractPlaceholdersFromHtml(html);
+  const vars = await dbLoadVars(companyId);
+
+  return {
+    ...computeMissingFromVars(vars, relevant),
+    docId: projectId || "default",
+    timestamp: new Date().toISOString(),
+  };
+}
+
 
 function personsFromSogc(list = []) {
   const out = [];
@@ -1374,12 +1566,36 @@ app.get("/api/vars/build", async (req, res) => {
 app.get("/api/missing", async (req, res) => {
   try {
     const companyId = String(req.query.companyId || "").trim();
-    const saved = await readMissing(companyId);
-    const varsCompany = companyId ? await dbLoadVars(companyId) : {};
+    const projectId = String(req.query.projectId || "").trim();
 
+    if (!companyId) {
+      return res.status(400).json({ ok: false, error: "companyId fehlt" });
+    }
+
+    if (projectId) {
+      const company = await getCompany(companyId);
+      const exists = !!(company && (company.projects || []).some((p) => p.id === projectId));
+      if (!exists) {
+        return res.status(404).json({ ok: false, error: "project not found" });
+      }
+
+      const out = await buildMissingFromProject(companyId, projectId);
+      await writeMissing(companyId, out);
+
+      return res.json({
+        ok: true,
+        companyId,
+        projectId,
+        ...out,
+      });
+    }
+
+    const saved = await readMissing(companyId);
+    const varsCompany = await dbLoadVars(companyId);
     const merged = { ...(saved.values || {}), ...(varsCompany || {}) };
 
     return res.json({
+      ok: true,
       vars: merged,
       relevant: saved.relevant || [],
       missing: saved.missing || [],
@@ -1388,38 +1604,75 @@ app.get("/api/missing", async (req, res) => {
       docId: saved.docId || "default",
       companyId,
     });
-  } catch {
-    return res.json({ vars: {}, relevant: [], missing: [], invalid: [], missing_count: 0, docId: "default" });
+  } catch (e) {
+    console.error("GET /api/missing failed", e);
+    return res.status(500).json({ ok: false, error: "internal error" });
   }
 });
 
 app.post("/api/missing/update", async (req, res) => {
   try {
     const companyId = String(req.query.companyId || "").trim();
-    if (!companyId) return res.status(400).json({ ok: false, error: "companyId fehlt" });
+    const projectId = String(req.query.projectId || "").trim();
 
-    const { relevant, missing, values, timestamp, docId } = req.body || {};
-    if (!Array.isArray(relevant) || !Array.isArray(missing) || typeof values !== "object") {
-      return res.status(400).json({ ok: false, error: "bad payload" });
+    if (!companyId) {
+      return res.status(400).json({ ok: false, error: "companyId fehlt" });
     }
 
+    if (!projectId) {
+      return res.status(400).json({ ok: false, error: "projectId fehlt" });
+    }
+
+    const company = await getCompany(companyId);
+    const exists = !!(company && (company.projects || []).some((p) => p.id === projectId));
+    if (!exists) {
+      return res.status(404).json({ ok: false, error: "project not found" });
+    }
+
+    const incoming = req.body?.values;
+    if (!incoming || typeof incoming !== "object" || Array.isArray(incoming)) {
+      return res.status(400).json({ ok: false, error: "values fehlt oder ist ungültig" });
+    }
+
+    const html = await dbGetProjectContent(projectId);
+    const relevant = extractPlaceholdersFromHtml(html);
+
+    const curr = await dbLoadVars(companyId);
+    const patch = {};
+
+    for (const key of relevant) {
+      if (Object.prototype.hasOwnProperty.call(incoming, key)) {
+        patch[key] = incoming[key] == null ? "" : String(incoming[key]).trim();
+      }
+    }
+
+    const vars = { ...curr, ...patch };
+    await dbSaveVars(companyId, vars);
+
+    const canon = normalizeUid(vars.UID);
+    await updateCompanyProfileAndUid(companyId, {
+      uidCanon: canon || null,
+      uidDisplay: canon || formatUID(vars.UID) || null,
+      profilePatch: patch,
+    });
+
     const out = {
-      relevant,
-      missing,
-      values,
-      missing_count: missing.length,
-      invalid: [],
-      docId: docId || "default",
-      timestamp: timestamp || new Date().toISOString(),
+      ...computeMissingFromVars(vars, relevant),
+      docId: projectId,
+      timestamp: new Date().toISOString(),
     };
 
     await writeMissing(companyId, out);
 
-    const sim = await simulateExtractForCompany(companyId);
-
-    return res.json({ ok: true, missing_count: out.missing_count, simulated: true, filled: sim.patchKeys });
+    return res.json({
+      ok: true,
+      companyId,
+      projectId,
+      updated: Object.keys(patch),
+      ...out,
+    });
   } catch (e) {
-    console.error("missing/update failed", e);
+    console.error("POST /api/missing/update failed", e);
     return res.status(500).json({ ok: false, error: "missing update failed" });
   }
 });
@@ -1534,10 +1787,18 @@ app.post(
     try {
       await fs.mkdir(PDF_DIR, { recursive: true });
 
+      const companyId = String(req.body?.companyId || req.query?.companyId || "").trim();
+      const projectId = String(req.body?.projectId || req.query?.projectId || "").trim() || null;
+
+      if (!companyId) {
+        return res.status(400).json({ ok: false, error: "companyId fehlt" });
+      }
+
       const m = req.files || {};
       const fibuIn = m.fibu?.[0];
       const stammIn = m.stamm?.[0];
       const verlustIn = m.verlust?.[0];
+
       if (!fibuIn || !stammIn || !verlustIn) {
         return res.status(400).json({ ok: false, error: "Alle drei Dateien sind erforderlich." });
       }
@@ -1545,6 +1806,39 @@ app.post(
       await writeDummyPdf(PDF.fibu, "Fibu", fibuIn.originalname);
       await writeDummyPdf(PDF.stamm, "Stammanteilbewertung", stammIn.originalname);
       await writeDummyPdf(PDF.verlust, "Verlusttabelle", verlustIn.originalname);
+
+      await dbCreateUploadMeta({
+        id: makeId("upl"),
+        companyId,
+        projectId,
+        docType: "fibu",
+        originalName: fibuIn.originalname,
+        storedPath: PDF.fibu,
+        fileSize: fibuIn.size ?? null,
+        mimeType: fibuIn.mimetype ?? null,
+      });
+
+      await dbCreateUploadMeta({
+        id: makeId("upl"),
+        companyId,
+        projectId,
+        docType: "stamm",
+        originalName: stammIn.originalname,
+        storedPath: PDF.stamm,
+        fileSize: stammIn.size ?? null,
+        mimeType: stammIn.mimetype ?? null,
+      });
+
+      await dbCreateUploadMeta({
+        id: makeId("upl"),
+        companyId,
+        projectId,
+        docType: "verlust",
+        originalName: verlustIn.originalname,
+        storedPath: PDF.verlust,
+        fileSize: verlustIn.size ?? null,
+        mimeType: verlustIn.mimetype ?? null,
+      });
 
       await Promise.allSettled([
         fs.unlink(fibuIn.path),
@@ -1559,12 +1853,33 @@ app.post(
   }
 );
 
-function singleUploadRoute(route, targetPath, label) {
+function singleUploadRoute(route, targetPath, label, docType) {
   app.post(route, upload.single("file"), async (req, res) => {
     try {
-      if (!req.file) return res.status(400).json({ ok: false, error: "kein File" });
+      const companyId = String(req.body?.companyId || req.query?.companyId || "").trim();
+      const projectId = String(req.body?.projectId || req.query?.projectId || "").trim() || null;
+
+      if (!companyId) {
+        return res.status(400).json({ ok: false, error: "companyId fehlt" });
+      }
+
+      if (!req.file) {
+        return res.status(400).json({ ok: false, error: "kein File" });
+      }
 
       await writeDummyPdf(targetPath, label, req.file.originalname);
+
+      await dbCreateUploadMeta({
+        id: makeId("upl"),
+        companyId,
+        projectId,
+        docType,
+        originalName: req.file.originalname,
+        storedPath: targetPath,
+        fileSize: req.file.size ?? null,
+        mimeType: req.file.mimetype ?? null,
+      });
+
       await Promise.allSettled([fs.unlink(req.file.path)]);
 
       res.json({ ok: true, simulated: true });
@@ -1574,9 +1889,10 @@ function singleUploadRoute(route, targetPath, label) {
   });
 }
 
-singleUploadRoute("/api/upload/fibu", PDF.fibu, "Fibu");
-singleUploadRoute("/api/upload/stamm", PDF.stamm, "Stammanteilbewertung");
-singleUploadRoute("/api/upload/verlust", PDF.verlust, "Verlusttabelle");
+singleUploadRoute("/api/upload/fibu", PDF.fibu, "Fibu", "fibu");
+singleUploadRoute("/api/upload/stamm", PDF.stamm, "Stammanteilbewertung", "stamm");
+singleUploadRoute("/api/upload/verlust", PDF.verlust, "Verlusttabelle", "verlust");
+
 
 app.post("/api/reset", async (_req, res) => {
   try {
@@ -1589,90 +1905,145 @@ app.post("/api/reset", async (_req, res) => {
 
 
 app.post("/api/start", async (req, res) => {
-  const { companyId, phase = "extract" } = req.body || {};
-  if (!companyId) return res.status(400).json({ ok: false, error: "companyId fehlt" });
+  const companyId = String(req.body?.companyId || "").trim();
+  const projectId = String(req.body?.projectId || "").trim() || null;
+  const phase = String(req.body?.phase || "extract").trim() || "extract";
 
-  if (!lock(companyId)) return res.status(409).json({ ok: false, msg: "Flow läuft bereits", companyId });
+  if (!companyId) {
+    return res.status(400).json({ ok: false, error: "companyId fehlt" });
+  }
+
+  if (!lock(companyId)) {
+    return res.status(409).json({ ok: false, msg: "Flow läuft bereits", companyId });
+  }
+
+  const runId = makeId("run");
 
   try {
+    await dbCreateRun({
+      id: runId,
+      companyId,
+      projectId,
+      phase,
+      status: "running",
+    });
+
     const missing = await assertAllPdfPresent();
-    if (missing.length) return res.status(400).json({ ok: false, error: "missing files", missing });
+    if (missing.length) {
+      await dbFinishRun(runId, "failed", { error: "missing files", missing });
+      return res.status(400).json({ ok: false, error: "missing files", missing, runId });
+    }
 
     const sim = await simulateExtractForCompany(companyId);
 
-    return res.json({ ok: true, phase, simulated: true, filled: sim.patchKeys });
+    await dbFinishRun(runId, "success", {
+      simulated: true,
+      filled: sim.patchKeys || [],
+    });
+
+    return res.json({
+      ok: true,
+      runId,
+      phase,
+      simulated: true,
+      filled: sim.patchKeys,
+    });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e) });
+    await dbFinishRun(runId, "failed", { error: String(e) }).catch(() => {});
+    return res.status(500).json({ ok: false, error: String(e), runId });
   } finally {
     unlock(companyId);
   }
 });
 
 app.post("/api/finalize", async (req, res) => {
-  const { companyId, template } = req.body || {};
-  if (!companyId) return res.status(400).json({ ok: false, error: "companyId fehlt" });
-  if (!template) return res.status(400).json({ ok: false, error: "template fehlt" });
+  const companyId = String(req.body?.companyId || "").trim();
+  const projectId = String(req.body?.projectId || "").trim() || null;
+  const template = String(req.body?.template || "").trim();
 
-  if (!lock(companyId)) return res.status(409).json({ ok: false, msg: "Flow läuft bereits", companyId });
+  if (!companyId) {
+    return res.status(400).json({ ok: false, error: "companyId fehlt" });
+  }
+
+  if (!template) {
+    return res.status(400).json({ ok: false, error: "template fehlt" });
+  }
+
+  if (!lock(companyId)) {
+    return res.status(409).json({ ok: false, msg: "Flow läuft bereits", companyId });
+  }
+
+  const runId = makeId("run");
 
   try {
+    await dbCreateRun({
+      id: runId,
+      companyId,
+      projectId,
+      phase: "finalize",
+      status: "running",
+    });
+
     const missing = await assertAllPdfPresent();
-    if (missing.length) return res.status(400).json({ ok: false, error: "missing files", missing });
+    if (missing.length) {
+      await dbFinishRun(runId, "failed", { error: "missing files", missing });
+      return res.status(400).json({ ok: false, error: "missing files", missing, runId });
+    }
 
     await simulateExtractForCompany(companyId);
 
-    await Promise.allSettled([safeUnlink(PDF.fibu), safeUnlink(PDF.stamm), safeUnlink(PDF.verlust)]);
+    await Promise.allSettled([
+      safeUnlink(PDF.fibu),
+      safeUnlink(PDF.stamm),
+      safeUnlink(PDF.verlust),
+    ]);
 
-    return res.json({ ok: true, simulated: true, template });
+    await dbFinishRun(runId, "success", {
+      simulated: true,
+      template,
+    });
+
+    return res.json({ ok: true, simulated: true, template, runId });
   } catch (e) {
-    return res.status(500).json({ ok: false, error: String(e) });
+    await dbFinishRun(runId, "failed", { error: String(e) }).catch(() => {});
+    return res.status(500).json({ ok: false, error: String(e), runId });
   } finally {
     unlock(companyId);
   }
 });
 
-
-
 app.post("/api/workflow/callback", async (req, res) => {
-  const companyId = String(req.query.companyId || "").trim();
-  if (!companyId) return res.status(400).json({ ok: false, error: "companyId fehlt" });
+  const companyId = String(req.query.companyId || req.body?.companyId || "").trim();
+  const projectId = String(req.query.projectId || req.body?.projectId || "").trim() || null;
+  const runId = String(req.query.runId || req.body?.runId || "").trim() || null;
+
+  if (!companyId) {
+    return res.status(400).json({ ok: false, error: "companyId fehlt" });
+  }
 
   const token = req.get("x-workflow-token");
-  if (!token || token !== WORKFLOW_TOKEN) return res.status(401).json({ ok: false, error: "unauthorized" });
+  if (!token || token !== WORKFLOW_TOKEN) {
+    return res.status(401).json({ ok: false, error: "unauthorized" });
+  }
 
   const source = req.body?.vars || req.body?.data || req.body || {};
   const s = Array.isArray(source) ? source[0] : source;
+
   if (!s || typeof s !== "object" || Object.keys(s).length === 0) {
     return res.status(400).json({ ok: false, error: "empty response" });
   }
 
-  const has = (v) => v !== undefined && v !== null && (typeof v === "number" || String(v).trim() !== "");
-  const asTxt = (v) => (v == null ? "" : String(v).trim());
+  await dbCreateRawResult({
+    id: makeId("raw"),
+    companyId,
+    projectId,
+    runId,
+    source: "workflow_callback",
+    payload: req.body,
+  });
 
   const curr = await dbLoadVars(companyId);
-  const patch = {};
-
-  if (has(s.CompanyName) || has(s.company)) patch.CompanyName = asTxt(s.CompanyName ?? s.company);
-  if (has(s.Adresse) || has(s.address)) patch.Adresse = asTxt(s.Adresse ?? s.address);
-  if (has(s.PLZ) || has(s.zip)) patch.PLZ = asTxt(s.PLZ ?? s.zip);
-  if (has(s.ORT) || has(s.city) || has(s.Ort)) patch.ORT = asTxt(s.ORT ?? s.city ?? s.Ort);
-
-  if (has(s.UID) || has(s.uid)) patch.UID = asTxt(s.UID ?? s.uid);
-
-  if (has(s.currentYear) || has(s.CurrentYear)) patch.currentYear = asTxt(s.currentYear ?? s.CurrentYear);
-
-  const gName = s.gesellschafter ?? s.Gesellschafter ?? s.partners;
-  if (has(gName)) patch.gesellschafter = asTxt(gName);
-  if (has(s.Gesellschafter_ort) || has(s.partners_city)) patch.Gesellschafter_ort = asTxt(s.Gesellschafter_ort ?? s.partners_city);
-
-  const rk = s.stammkapital ?? s.Stammkapital;
-  if (has(rk)) {
-    patch.Stammkapital = asTxt(rk);
-  }
-
-  const su = s.Stammanteil ?? s.share_unit;
-  if (has(su)) patch.Stammanteil = asTxt(su);
-
+  const patch = mapWorkflowPayloadToVars(s);
   const vars = { ...curr, ...patch };
 
   await dbSaveVars(companyId, vars);
@@ -1680,7 +2051,7 @@ app.post("/api/workflow/callback", async (req, res) => {
   const canon = normalizeUid(vars.UID);
   await updateCompanyProfileAndUid(companyId, {
     uidCanon: canon || null,
-    uidDisplay: canon || null,
+    uidDisplay: canon || formatUID(vars.UID) || null,
     profilePatch: patch,
   });
 
@@ -1689,6 +2060,13 @@ app.post("/api/workflow/callback", async (req, res) => {
     if (s.startOfPeriod) fibuPayload.startOfPeriod = s.startOfPeriod;
     if (s.endOfPeriod) fibuPayload.endOfPeriod = s.endOfPeriod;
     await updateCompanyFibu(companyId, fibuPayload);
+  }
+
+  if (runId) {
+    await dbFinishRun(runId, "success", {
+      callbackReceived: true,
+      updated: Object.keys(patch),
+    }).catch(() => {});
   }
 
   return res.json({ ok: true, updated: Object.keys(patch) });
@@ -1763,6 +2141,9 @@ app.delete("/api/companies/:id", async (req, res) => {
       await conn.query(`DELETE FROM company_vars WHERE company_id=?`, [companyId]);
     }
 
+    await conn.query(`DELETE FROM project_uploads WHERE company_id=?`, [companyId]);
+    await conn.query(`DELETE FROM workflow_results_raw WHERE company_id=?`, [companyId]);
+    await conn.query(`DELETE FROM project_runs WHERE company_id=?`, [companyId]);
     await conn.query(`DELETE FROM companies WHERE id=?`, [companyId]);
 
     await conn.commit();
