@@ -134,8 +134,14 @@ function chf(n) {
 }
 
 function formatUID(u) {
-  return clean(u);
+  const canon = normalizeUid(u);
+  if (!canon) return clean(u);
+
+  const digits = canon.slice(3);
+  return `CHE-${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}`;
 }
+
+
 
 function normalizeUid(u) {
   const s = String(u || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -736,11 +742,16 @@ function extractPlaceholdersFromHtml(html) {
 }
 
 function computeMissingFromVars(vars, relevant) {
-  const values = vars && typeof vars === "object" ? vars : {};
   const rel = Array.isArray(relevant) ? relevant : [];
+  const source = vars && typeof vars === "object" ? vars : {};
+
+  const { vars: normalizedValues, invalid } = normalizeAndValidateVars(source, rel);
+  const invalidKeys = new Set(invalid.map((x) => x.key));
 
   const missing = rel.filter((key) => {
-    const v = values[key];
+    if (invalidKeys.has(key)) return false;
+
+    const v = normalizedValues[key];
     return !(
       v !== undefined &&
       v !== null &&
@@ -752,8 +763,8 @@ function computeMissingFromVars(vars, relevant) {
     relevant: rel,
     missing,
     missing_count: missing.length,
-    values,
-    invalid: [],
+    values: normalizedValues,
+    invalid,
   };
 }
 
@@ -1646,13 +1657,16 @@ app.post("/api/missing/update", async (req, res) => {
       }
     }
 
-    const vars = { ...curr, ...patch };
+    const mergedVars = { ...curr, ...patch };
+    const normalized = normalizeAndValidateVars(mergedVars, Object.keys(mergedVars));
+    const vars = normalized.vars;
+
     await dbSaveVars(companyId, vars);
 
     const canon = normalizeUid(vars.UID);
     await updateCompanyProfileAndUid(companyId, {
       uidCanon: canon || null,
-      uidDisplay: canon || formatUID(vars.UID) || null,
+      uidDisplay: canon ? formatUID(canon) : null,
       profilePatch: patch,
     });
 
@@ -2046,28 +2060,51 @@ app.post("/api/workflow/callback", async (req, res) => {
   const patch = mapWorkflowPayloadToVars(s);
   const vars = { ...curr, ...patch };
 
+
+  const mergedVars = { ...curr, ...patch };
+  const normalized = normalizeAndValidateVars(mergedVars, Object.keys(mergedVars));
+
+
   await dbSaveVars(companyId, vars);
 
   const canon = normalizeUid(vars.UID);
   await updateCompanyProfileAndUid(companyId, {
     uidCanon: canon || null,
-    uidDisplay: canon || formatUID(vars.UID) || null,
+    uidDisplay: canon ? formatUID(canon) : null,
     profilePatch: patch,
   });
 
   if (s.startOfPeriod || s.endOfPeriod) {
     const fibuPayload = {};
-    if (s.startOfPeriod) fibuPayload.startOfPeriod = s.startOfPeriod;
-    if (s.endOfPeriod) fibuPayload.endOfPeriod = s.endOfPeriod;
+    if (s.startOfPeriod) {
+      const normalizedStart = normalizeDateValue(s.startOfPeriod);
+      fibuPayload.startOfPeriod = normalizedStart || s.startOfPeriod;
+    }
+    if (s.endOfPeriod) {
+      const normalizedEnd = normalizeDateValue(s.endOfPeriod);
+      fibuPayload.endOfPeriod = normalizedEnd || s.endOfPeriod;
+    }
     await updateCompanyFibu(companyId, fibuPayload);
+  }
+
+  if (projectId) {
+    const missingState = await buildMissingFromProject(companyId, projectId);
+    await writeMissing(companyId, missingState);
   }
 
   if (runId) {
     await dbFinishRun(runId, "success", {
       callbackReceived: true,
       updated: Object.keys(patch),
+      invalid: normalized.invalid,
     }).catch(() => {});
   }
+
+  return res.json({
+    ok: true,
+    updated: Object.keys(patch),
+    invalid: normalized.invalid,
+  });
 
   return res.json({ ok: true, updated: Object.keys(patch) });
 });
