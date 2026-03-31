@@ -7,6 +7,11 @@ const cors = require("cors");
 const cheerio = require("cheerio");
 const multer = require("multer");
 
+const WORKFLOW_WEBHOOK_URL = process.env.WORKFLOW_WEBHOOK_URL || "";
+const WORKFLOW_OUT_TOKEN = process.env.WORKFLOW_OUT_TOKEN || "";
+
+const APP_BASE_URL = process.env.APP_BASE_URL || `http://localhost:${process.env.PORT || 3000}`;
+
 const DATA_DIR = path.join(__dirname, "data");
 const MISSING_DIR = path.join(DATA_DIR, "missing");
 const VARS_DIR = path.join(DATA_DIR, "vars");
@@ -102,6 +107,45 @@ app.use(express.urlencoded({ extended: true }));
 const NBSP = /\u00a0/g;
 const clean = (s) => String(s ?? "").trim();
 
+function normalizeDateValue(v) {
+  const s = String(v || "").trim();
+  if (!s) return "";
+
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+
+  const m = s.match(/^(\d{2})\.(\d{2})\.(\d{4})$/);
+  if (m) return `${m[3]}-${m[2]}-${m[1]}`;
+
+  return s;
+}
+
+function normalizeAndValidateVars(vars, relevantKeys = []) {
+  const src = vars && typeof vars === "object" ? vars : {};
+  const out = {};
+  const invalid = [];
+
+  for (const [key, value] of Object.entries(src)) {
+    let v = value == null ? "" : String(value).trim();
+
+    if (key === "UID" && v) {
+      const canon = normalizeUid(v);
+      if (!canon) {
+        invalid.push({ key, reason: "invalid_uid", value: v });
+      } else {
+        v = formatUID(canon);
+      }
+    }
+
+    if ((key === "PLZ") && v && !/^\d{4}$/.test(v)) {
+      invalid.push({ key, reason: "invalid_plz", value: v });
+    }
+
+    out[key] = v;
+  }
+
+  return { vars: out, invalid };
+}
+
 function decodeHtml(s) {
   return String(s || "")
     .replace(/&nbsp;/g, " ")
@@ -140,8 +184,6 @@ function formatUID(u) {
   const digits = canon.slice(3);
   return `CHE-${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}`;
 }
-
-
 
 function normalizeUid(u) {
   const s = String(u || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
@@ -671,6 +713,126 @@ function mapWorkflowPayloadToVars(s) {
   }
 
   return patch;
+}
+
+function logEvent(level, message, context = {}) {
+  const entry = {
+    ts: new Date().toISOString(),
+    level,
+    message,
+    ...context,
+  };
+
+  if (level === "error") {
+    console.error(JSON.stringify(entry));
+  } else if (level === "warn") {
+    console.warn(JSON.stringify(entry));
+  } else {
+    console.log(JSON.stringify(entry));
+  }
+}
+
+function apiError(res, status, error, message, details = {}) {
+  return res.status(status).json({
+    ok: false,
+    error,
+    message,
+    status,
+    timestamp: new Date().toISOString(),
+    ...details,
+  });
+}
+
+async function triggerWorkflow({
+  companyId,
+  projectId = null,
+  runId,
+  phase = "extract",
+}) {
+  if (!WORKFLOW_WEBHOOK_URL) {
+    throw new Error("WORKFLOW_WEBHOOK_URL fehlt");
+  }
+
+  const company = await getCompany(companyId);
+  if (!company) {
+    throw new Error(`Firma ${companyId} nicht gefunden`);
+  }
+
+  const missingState = projectId
+    ? await buildMissingFromProject(companyId, projectId)
+    : await readMissing(companyId);
+
+  const payload = {
+    companyId,
+    projectId,
+    runId,
+    phase,
+    company: {
+      id: company.id,
+      name: company.name,
+      uid: company.uid || "",
+      uidCanon: company.uidCanon || "",
+    },
+    missing: {
+      relevant: missingState?.relevant || [],
+      missing: missingState?.missing || [],
+      values: missingState?.values || {},
+      invalid: missingState?.invalid || [],
+      timestamp: new Date().toISOString(),
+    },
+    files: {
+      fibu: PDF.fibu,
+      stamm: PDF.stamm,
+      verlust: PDF.verlust,
+    },
+    callback: {
+      url: `${APP_BASE_URL}/api/workflow/callback`,
+    },
+  };
+
+  const headers = {
+    "Content-Type": "application/json",
+  };
+
+  if (WORKFLOW_OUT_TOKEN) {
+    headers["x-workflow-token"] = WORKFLOW_OUT_TOKEN;
+  }
+
+  logEvent("info", "workflow trigger start", {
+    companyId,
+    projectId,
+    runId,
+    phase,
+    webhook: WORKFLOW_WEBHOOK_URL,
+  });
+
+  const response = await fetchFn(WORKFLOW_WEBHOOK_URL, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(payload),
+  });
+
+  let body = null;
+  try {
+    body = await response.json();
+  } catch {
+    body = null;
+  }
+
+  if (!response.ok) {
+    throw new Error(
+      `Workflow-Webhook Fehler: ${response.status} ${body?.error || response.statusText}`
+    );
+  }
+
+  logEvent("info", "workflow trigger ok", {
+    companyId,
+    projectId,
+    runId,
+    response: body,
+  });
+
+  return body;
 }
 
 
@@ -1924,11 +2086,17 @@ app.post("/api/start", async (req, res) => {
   const phase = String(req.body?.phase || "extract").trim() || "extract";
 
   if (!companyId) {
-    return res.status(400).json({ ok: false, error: "companyId fehlt" });
+    return apiError(res, 400, "VALIDATION_ERROR", "companyId fehlt");
   }
 
   if (!lock(companyId)) {
-    return res.status(409).json({ ok: false, msg: "Flow läuft bereits", companyId });
+    return apiError(
+      res,
+      409,
+      "RUN_ALREADY_ACTIVE",
+      "Für diese Firma läuft bereits ein Workflow",
+      { companyId }
+    );
   }
 
   const runId = makeId("run");
@@ -1942,29 +2110,76 @@ app.post("/api/start", async (req, res) => {
       status: "running",
     });
 
-    const missing = await assertAllPdfPresent();
-    if (missing.length) {
-      await dbFinishRun(runId, "failed", { error: "missing files", missing });
-      return res.status(400).json({ ok: false, error: "missing files", missing, runId });
+    const missingFiles = await assertAllPdfPresent();
+    if (missingFiles.length) {
+      await dbFinishRun(runId, "failed", {
+        error: "missing files",
+        missing: missingFiles,
+      });
+
+      logEvent("warn", "workflow start failed - missing files", {
+        companyId,
+        projectId,
+        runId,
+        missingFiles,
+      });
+
+      return apiError(
+        res,
+        400,
+        "MISSING_FILES",
+        "Nicht alle erforderlichen Dateien sind vorhanden",
+        { runId, missing: missingFiles }
+      );
     }
 
-    const sim = await simulateExtractForCompany(companyId);
+    const workflowResponse = await triggerWorkflow({
+      companyId,
+      projectId,
+      runId,
+      phase,
+    });
 
-    await dbFinishRun(runId, "success", {
-      simulated: true,
-      filled: sim.patchKeys || [],
+    await pool.query(
+      `UPDATE project_runs
+       SET status = ?
+       WHERE id = ?`,
+      ["waiting_callback", runId]
+    );
+
+    logEvent("info", "workflow started", {
+      companyId,
+      projectId,
+      runId,
+      phase,
     });
 
     return res.json({
       ok: true,
       runId,
       phase,
-      simulated: true,
-      filled: sim.patchKeys,
+      status: "waiting_callback",
+      workflow: workflowResponse || null,
     });
   } catch (e) {
-    await dbFinishRun(runId, "failed", { error: String(e) }).catch(() => {});
-    return res.status(500).json({ ok: false, error: String(e), runId });
+    await dbFinishRun(runId, "failed", {
+      error: String(e),
+    }).catch(() => {});
+
+    logEvent("error", "workflow start exception", {
+      companyId,
+      projectId,
+      runId,
+      error: String(e),
+    });
+
+    return apiError(
+      res,
+      500,
+      "WORKFLOW_START_FAILED",
+      "Workflow konnte nicht gestartet werden",
+      { runId, details: String(e) }
+    );
   } finally {
     unlock(companyId);
   }
@@ -2031,82 +2246,124 @@ app.post("/api/workflow/callback", async (req, res) => {
   const projectId = String(req.query.projectId || req.body?.projectId || "").trim() || null;
   const runId = String(req.query.runId || req.body?.runId || "").trim() || null;
 
-  if (!companyId) {
-    return res.status(400).json({ ok: false, error: "companyId fehlt" });
-  }
-
   const token = req.get("x-workflow-token");
   if (!token || token !== WORKFLOW_TOKEN) {
-    return res.status(401).json({ ok: false, error: "unauthorized" });
+    logEvent("warn", "workflow callback unauthorized", { companyId, projectId, runId });
+    return apiError(res, 401, "UNAUTHORIZED", "Ungültiger Workflow-Token");
+  }
+
+  if (!companyId) {
+    return apiError(res, 400, "VALIDATION_ERROR", "companyId fehlt");
+  }
+
+  if (!runId) {
+    return apiError(res, 400, "VALIDATION_ERROR", "runId fehlt");
   }
 
   const source = req.body?.vars || req.body?.data || req.body || {};
-  const s = Array.isArray(source) ? source[0] : source;
+  const payload = Array.isArray(source) ? source[0] : source;
 
-  if (!s || typeof s !== "object" || Object.keys(s).length === 0) {
-    return res.status(400).json({ ok: false, error: "empty response" });
+  if (!payload || typeof payload !== "object" || Object.keys(payload).length === 0) {
+    logEvent("warn", "workflow callback empty payload", { companyId, projectId, runId });
+    return apiError(res, 400, "EMPTY_PAYLOAD", "Workflow hat keine Daten geliefert", {
+      companyId,
+      projectId,
+      runId,
+    });
   }
 
-  await dbCreateRawResult({
-    id: makeId("raw"),
-    companyId,
-    projectId,
-    runId,
-    source: "workflow_callback",
-    payload: req.body,
-  });
+  try {
+    await dbCreateRawResult({
+      id: makeId("raw"),
+      companyId,
+      projectId,
+      runId,
+      source: "workflow_callback",
+      payload: req.body,
+    });
 
-  const curr = await dbLoadVars(companyId);
-  const patch = mapWorkflowPayloadToVars(s);
-  const vars = { ...curr, ...patch };
+    const currentVars = await dbLoadVars(companyId);
+    const patch = mapWorkflowPayloadToVars(payload);
+    const mergedVars = { ...currentVars, ...patch };
 
+    const normalized = normalizeAndValidateVars(
+      mergedVars,
+      Object.keys(mergedVars)
+    );
 
-  const mergedVars = { ...curr, ...patch };
-  const normalized = normalizeAndValidateVars(mergedVars, Object.keys(mergedVars));
+    await dbSaveVars(companyId, normalized.vars);
 
+    const canon = normalizeUid(normalized.vars.UID);
+    await updateCompanyProfileAndUid(companyId, {
+      uidCanon: canon || null,
+      uidDisplay: canon ? formatUID(canon) : null,
+      profilePatch: patch,
+    });
 
-  await dbSaveVars(companyId, vars);
-
-  const canon = normalizeUid(vars.UID);
-  await updateCompanyProfileAndUid(companyId, {
-    uidCanon: canon || null,
-    uidDisplay: canon ? formatUID(canon) : null,
-    profilePatch: patch,
-  });
-
-  if (s.startOfPeriod || s.endOfPeriod) {
-    const fibuPayload = {};
-    if (s.startOfPeriod) {
-      const normalizedStart = normalizeDateValue(s.startOfPeriod);
-      fibuPayload.startOfPeriod = normalizedStart || s.startOfPeriod;
+    if (payload.startOfPeriod || payload.endOfPeriod) {
+      const fibuPayload = {};
+      if (payload.startOfPeriod) {
+        const normalizedStart = normalizeDateValue(payload.startOfPeriod);
+        fibuPayload.startOfPeriod = normalizedStart || payload.startOfPeriod;
+      }
+      if (payload.endOfPeriod) {
+        const normalizedEnd = normalizeDateValue(payload.endOfPeriod);
+        fibuPayload.endOfPeriod = normalizedEnd || payload.endOfPeriod;
+      }
+      await updateCompanyFibu(companyId, fibuPayload);
     }
-    if (s.endOfPeriod) {
-      const normalizedEnd = normalizeDateValue(s.endOfPeriod);
-      fibuPayload.endOfPeriod = normalizedEnd || s.endOfPeriod;
+
+    if (projectId) {
+      const missingState = await buildMissingFromProject(companyId, projectId);
+      await writeMissing(companyId, missingState);
     }
-    await updateCompanyFibu(companyId, fibuPayload);
-  }
 
-  if (projectId) {
-    const missingState = await buildMissingFromProject(companyId, projectId);
-    await writeMissing(companyId, missingState);
-  }
-
-  if (runId) {
     await dbFinishRun(runId, "success", {
       callbackReceived: true,
       updated: Object.keys(patch),
       invalid: normalized.invalid,
     }).catch(() => {});
+
+    logEvent("info", "workflow callback processed", {
+      companyId,
+      projectId,
+      runId,
+      updated: Object.keys(patch),
+      invalid: normalized.invalid,
+    });
+
+    return res.json({
+      ok: true,
+      runId,
+      updated: Object.keys(patch),
+      invalid: normalized.invalid,
+    });
+  } catch (e) {
+    await dbFinishRun(runId, "failed", {
+      callbackReceived: true,
+      error: String(e),
+    }).catch(() => {});
+
+    logEvent("error", "workflow callback exception", {
+      companyId,
+      projectId,
+      runId,
+      error: String(e),
+    });
+
+    return apiError(
+      res,
+      500,
+      "CALLBACK_PROCESSING_FAILED",
+      "Workflow-Callback konnte nicht verarbeitet werden",
+      {
+        companyId,
+        projectId,
+        runId,
+        details: String(e),
+      }
+    );
   }
-
-  return res.json({
-    ok: true,
-    updated: Object.keys(patch),
-    invalid: normalized.invalid,
-  });
-
-  return res.json({ ok: true, updated: Object.keys(patch) });
 });
 
 app.get("/api/companies/:id/fibu", async (req, res) => {
