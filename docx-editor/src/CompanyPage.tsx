@@ -12,6 +12,7 @@ import {
   getUploadState,
   runExtract,
   getMissing,
+  updateMissing,
 } from "./api";
 import { EXAMPLE_JAHRESRECHNUNG_HTML } from "./templates/jahresrechnung-example";
 import { extractPlaceholdersFromHtml } from "./autofill/replacePlaceholders";
@@ -32,6 +33,7 @@ type Project = {
 
 export default function CompanyPage() {
 
+const [activeProjectId, setActiveProjectId] = useState<string>("");
 const location = useLocation();
 const justCreated =
   (location.state as any)?.justCreated === true;
@@ -190,6 +192,13 @@ async function addProject() {
     return;
   }
 
+  await jPOST(
+    `${API}/api/companies/${id}/projects/${res.project.id}/content`,
+    {
+      html: EXAMPLE_JAHRESRECHNUNG_HTML,
+    }
+  );
+
   setCompany((prev: any) =>
     !prev
       ? prev
@@ -199,7 +208,8 @@ async function addProject() {
         }
   );
 
-  await startReport();
+  setActiveProjectId(res.project.id);
+  await startReport(res.project.id);
 }
 
   async function doUpload() {
@@ -212,7 +222,7 @@ async function addProject() {
     setUploading(true);
     setUploadedOk(false);
     try {
-      await uploadAll({ fibu, stamm, verlust });
+      await uploadAll(company.id, { fibu, stamm, verlust });
       setUploadedOk(true);
       alert("Belege erfolgreich hochgeladen.");
     } catch (e: any) {
@@ -276,64 +286,62 @@ const saveShareholderSelection = async () => {
   }
 };
 
-  async function startReport() {
-    if (!company) return;
-    try {
-      const up = await getUploadState().catch(() => null);
-      if (!up?.ok || !up.all) {
-        const fehlend = [
-          !up?.fibu ? "Fibu" : null,
-          !up?.stamm ? "Stammanteilbewertung" : null,
-          !up?.verlust ? "Verlusttabelle" : null,
-        ]
-          .filter(Boolean)
-          .join(", ");
-        alert(
-          `Bitte zuerst alle Belege hochladen: ${fehlend || "unbekannt"}.`
-        );
-        return;
-      }
+async function startReport(projectIdArg?: string) {
+  if (!company) return;
 
-      await jPOST(`${API}/api/companies/${company.id}/hydrate-vars`);
+  const projectId = projectIdArg || activeProjectId;
 
-      const cur = await jGET<{ vars: Record<string, string> }>(
-        `${API}/api/vars/current?companyId=${company.id}`
-      );
-      const nextVars = cur?.vars || {};
-      setVars(nextVars);
+  if (!projectId) {
+    alert("Bitte zuerst ein Projekt auswählen oder anlegen.");
+    return;
+  }
 
-      const missing = requiredKeys.filter(
-        (k) => !nextVars[k] || String(nextVars[k]).trim() === ""
-      );
-
-      if (missing.length === 0) {
-        setStep(3); // direkt letzter Schritt
-      } else {
-        setStep(2); // zuerst Variablen-Check
-      }
-      setWizardOpen(true);
-    } catch (e: any) {
-      alert("Start fehlgeschlagen:\n" + e.message);
+  try {
+    const up = await getUploadState().catch(() => null);
+    if (!up?.ok || !up.all) {
+      const fehlend = [
+        !up?.fibu ? "Fibu" : null,
+        !up?.stamm ? "Stammanteilbewertung" : null,
+        !up?.verlust ? "Verlusttabelle" : null,
+      ]
+        .filter(Boolean)
+        .join(", ");
+      alert(`Bitte zuerst alle Belege hochladen: ${fehlend || "unbekannt"}.`);
+      return;
     }
+
+    await jPOST(`${API}/api/companies/${company.id}/hydrate-vars`);
+
+    const cur = await jGET<{ vars: Record<string, string> }>(
+      `${API}/api/vars/current?companyId=${company.id}`
+    );
+    const nextVars = cur?.vars || {};
+    setVars(nextVars);
+
+    const missing = requiredKeys.filter(
+      (k) => !nextVars[k] || String(nextVars[k]).trim() === ""
+    );
+
+    setActiveProjectId(projectId);
+
+    if (missing.length === 0) {
+      setStep(3);
+    } else {
+      setStep(2);
+    }
+    setWizardOpen(true);
+  } catch (e: any) {
+    alert("Start fehlgeschlagen:\n" + e.message);
+  }
+}
+
+async function writeMissing(current: Record<string, string>) {
+  if (!activeProjectId) {
+    throw new Error("Kein aktives Projekt ausgewählt");
   }
 
-  async function writeMissing(
-    relevantKeys: string[],
-    current: Record<string, string>
-  ) {
-    const missing = relevantKeys.filter(
-      (k) => !current?.[k] || String(current[k]).trim() === ""
-    );
-    await jPOST(
-      `${API}/api/missing/update?companyId=${encodeURIComponent(company.id)}`,
-      {
-        relevant: relevantKeys,
-        missing,
-        values: current || {},
-        timestamp: new Date().toISOString(),
-      }
-    );
-  }
+  await updateMissing(company.id, activeProjectId, current || {});
+}
 
   async function saveVars() {
     setSavingVars(true);
@@ -347,59 +355,63 @@ const saveShareholderSelection = async () => {
     }
   }
 
-  async function findMissingValues() {
-    if (!company) return;
-    if (!missingKeys.length) {
-      alert("Es fehlen aktuell keine Werte – alles ist ausgefüllt.");
-      return;
-    }
+async function findMissingValues() {
+  if (!company) return;
 
-    setSearchingMissing(true);
-    try {
-      await patchVars(vars, company.id);
+  if (!activeProjectId) {
+    alert("Bitte zuerst ein Projekt auswählen oder anlegen.");
+    return;
+  }
 
-      const beforeVars = { ...vars };
-      const missingBefore = [...missingKeys];
+  if (!missingKeys.length) {
+    alert("Es fehlen aktuell keine Werte – alles ist ausgefüllt.");
+    return;
+  }
 
-      await writeMissing(requiredKeys, beforeVars);
+  setSearchingMissing(true);
+  try {
+    await patchVars(vars, company.id);
 
-      await runExtract(company.id);
+    const beforeVars = { ...vars };
+    const missingBefore = [...missingKeys];
 
-      const timeoutMs = 60000;
-      const startTs = Date.now();
-      let last = beforeVars;
+    await writeMissing(beforeVars);
 
-      while (Date.now() - startTs < timeoutMs) {
-        const r = await jGET<{ vars: Record<string, string> }>(
-          `${API}/api/vars/current?companyId=${company.id}`
-        ).catch(() => null);
-        const cur = r?.vars || {};
+    await runExtract(company.id, activeProjectId);
 
-        const newlyFilled = missingBefore.filter((k) => {
-          const v = (cur[k] ?? "").trim();
-          const old = (last[k] ?? "").trim();
-          return v !== "" && v !== old;
-        });
+    const timeoutMs = 60000;
+    const startTs = Date.now();
+    let last = beforeVars;
 
-        if (newlyFilled.length) {
-          setVars(cur);
-          alert(
-            `Automatisch gefundene Werte für: ${newlyFilled.join(", ")}`
-          );
-          return;
-        }
+    while (Date.now() - startTs < timeoutMs) {
+      const r = await jGET<{ vars: Record<string, string> }>(
+        `${API}/api/vars/current?companyId=${company.id}`
+      ).catch(() => null);
+      const cur = r?.vars || {};
 
-        last = cur;
-        await new Promise((ok) => setTimeout(ok, 1500));
+      const newlyFilled = missingBefore.filter((k) => {
+        const v = (cur[k] ?? "").trim();
+        const old = (last[k] ?? "").trim();
+        return v !== "" && v !== old;
+      });
+
+      if (newlyFilled.length) {
+        setVars(cur);
+        alert(`Automatisch gefundene Werte für: ${newlyFilled.join(", ")}`);
+        return;
       }
 
-      alert("Es konnten keine zusätzlichen Werte automatisch gefunden werden.");
-    } catch (e: any) {
-      alert("Automatische Suche fehlgeschlagen:\n" + e.message);
-    } finally {
-      setSearchingMissing(false);
+      last = cur;
+      await new Promise((ok) => setTimeout(ok, 1500));
     }
+
+    alert("Es konnten keine zusätzlichen Werte automatisch gefunden werden.");
+  } catch (e: any) {
+    alert("Automatische Suche fehlgeschlagen:\n" + e.message);
+  } finally {
+    setSearchingMissing(false);
   }
+}
 
   async function finalize() {
     if (!company) return;
@@ -573,7 +585,7 @@ const saveShareholderSelection = async () => {
                     <label>Fibu</label>
                     <input
                       type="file"
-                      accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg"
+                      accept=".pdf,.docx,.xlsx,.xls"
                       onChange={(e) =>
                         setFibu(e.currentTarget.files?.[0] ?? null)
                       }
@@ -581,7 +593,7 @@ const saveShareholderSelection = async () => {
                     <label>Stammanteilbewertung</label>
                     <input
                       type="file"
-                      accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg"
+                      accept=".pdf,.docx,.xlsx,.xls"
                       onChange={(e) =>
                         setStamm(e.currentTarget.files?.[0] ?? null)
                       }
@@ -589,7 +601,7 @@ const saveShareholderSelection = async () => {
                     <label>Verlusttabelle</label>
                     <input
                       type="file"
-                      accept=".pdf,.doc,.docx,.xls,.xlsx,.csv,.png,.jpg,.jpeg"
+                      accept=".pdf,.docx,.xlsx,.xls"
                       onChange={(e) =>
                         setVerlust(e.currentTarget.files?.[0] ?? null)
                       }
@@ -650,7 +662,7 @@ const saveShareholderSelection = async () => {
                   <button
                     type="button"
                     className="rv-button rv-button--primary"
-                    onClick={startReport}
+                    onClick={() => startReport()}
                   >
                     Wizard starten
                   </button>

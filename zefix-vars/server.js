@@ -1,5 +1,8 @@
 require("dotenv").config();
 
+const { convertAnyToPdf } = require("./data/convertfiles/convertAnyToPdf");
+
+
 const path = require("path");
 const fs = require("fs/promises");
 const express = require("express");
@@ -693,23 +696,72 @@ function mapWorkflowPayloadToVars(s) {
     patch.currentYear = asTxt(s.currentYear ?? s.CurrentYear);
   }
 
-  const gName = s.gesellschafter ?? s.Gesellschafter ?? s.partners;
-  if (has(gName)) {
-    patch.gesellschafter = asTxt(gName);
+  if (has(s.gesellschafter) || has(s.Gesellschafter) || has(s.partners)) {
+    patch.gesellschafter = asTxt(s.gesellschafter ?? s.Gesellschafter ?? s.partners);
   }
 
   if (has(s.Gesellschafter_ort) || has(s.partners_city)) {
     patch.Gesellschafter_ort = asTxt(s.Gesellschafter_ort ?? s.partners_city);
   }
 
-  const rk = s.stammkapital ?? s.Stammkapital;
-  if (has(rk)) {
-    patch.Stammkapital = asTxt(rk);
+  if (has(s.gesellschafterHerkunft)) {
+    patch.gesellschafterHerkunft = asTxt(s.gesellschafterHerkunft);
   }
 
-  const su = s.Stammanteil ?? s.share_unit;
-  if (has(su)) {
-    patch.Stammanteil = asTxt(su);
+  if (has(s.stammkapital) || has(s.Stammkapital)) {
+    patch.Stammkapital = asTxt(s.stammkapital ?? s.Stammkapital);
+  }
+
+  if (has(s.Stammanteil) || has(s.share_unit)) {
+    patch.Stammanteil = asTxt(s.Stammanteil ?? s.share_unit);
+  }
+
+  if (has(s.StammanteilBeschreibung)) {
+    patch.StammanteilBeschreibung = asTxt(s.StammanteilBeschreibung);
+
+    if (!has(s.Stammanteil)) {
+      patch.Stammanteil = asTxt(s.StammanteilBeschreibung);
+    }
+  }
+
+  if (has(s.totaleAktiven)) {
+    patch.totaleAktiven = asTxt(s.totaleAktiven);
+  }
+
+  if (has(s.gesetzlicheReserven)) {
+    patch.gesetzlicheReserven = asTxt(s.gesetzlicheReserven);
+  }
+
+  if (has(s.Gewinnvortrag)) {
+    patch.Gewinnvortrag = asTxt(s.Gewinnvortrag);
+  }
+
+  if (has(s.Gewinn)) {
+    patch.Gewinn = asTxt(s.Gewinn);
+  }
+
+  if (has(s.gewinnVerlustVortrag)) {
+    patch.gewinnVerlustVortrag = asTxt(s.gewinnVerlustVortrag);
+  }
+
+  if (has(s.schlussZeit)) {
+    patch.schlussZeit = asTxt(s.schlussZeit);
+  }
+
+  if (has(s.protokollDatum)) {
+    patch.protokollDatum = asTxt(s.protokollDatum);
+  }
+
+  if (has(s.VorsorgeVerbindlichkeit)) {
+    patch.VorsorgeVerbindlichkeit = asTxt(s.VorsorgeVerbindlichkeit);
+  }
+
+  if (has(s.TreuhandName)) {
+    patch.TreuhandName = asTxt(s.TreuhandName);
+  }
+
+  if (has(s.vollstaendigkeitDatum)) {
+    patch.vollstaendigkeitDatum = asTxt(s.vollstaendigkeitDatum);
   }
 
   return patch;
@@ -1368,7 +1420,7 @@ async function simulateExtractForCompany(companyId) {
       missing: newMissing,
       missing_count: newMissing.length,
       timestamp: new Date().toISOString(),
-      simulated: true,
+      simulated: false,
     });
   }
 
@@ -1861,67 +1913,7 @@ function escapePdfText(s) {
     .replace(/\r?\n/g, " ");
 }
 
-function makeSimplePdf(lines) {
-  const arr = Array.isArray(lines) ? lines : [String(lines || "")];
 
-  const ops = [];
-  ops.push("BT");
-  ops.push("/F1 12 Tf");
-  ops.push("72 760 Td");
-  if (arr.length) {
-    ops.push(`(${escapePdfText(arr[0])}) Tj`);
-    for (let i = 1; i < arr.length; i++) {
-      ops.push("0 -16 Td");
-      ops.push(`(${escapePdfText(arr[i])}) Tj`);
-    }
-  }
-  ops.push("ET");
-
-  const stream = ops.join("\n");
-  const streamLen = Buffer.byteLength(stream, "utf8");
-
-  const objects = [
-    "1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n",
-    "2 0 obj\n<< /Type /Pages /Kids [3 0 R] /Count 1 >>\nendobj\n",
-    "3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n",
-    `4 0 obj\n<< /Length ${streamLen} >>\nstream\n${stream}\nendstream\nendobj\n`,
-    "5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\n",
-  ];
-
-  const header = "%PDF-1.4\n";
-  const offsets = [0];
-  let body = header;
-  for (const obj of objects) {
-    offsets.push(Buffer.byteLength(body, "utf8"));
-    body += obj;
-  }
-
-  const xrefPos = Buffer.byteLength(body, "utf8");
-  let xref = "";
-  xref += "xref\n";
-  xref += `0 ${objects.length + 1}\n`;
-  xref += "0000000000 65535 f \n";
-  for (let i = 1; i <= objects.length; i++) {
-    const off = String(offsets[i]).padStart(10, "0");
-    xref += `${off} 00000 n \n`;
-  }
-
-  const trailer = `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefPos}\n%%EOF\n`;
-  const full = body + xref + trailer;
-  return Buffer.from(full, "utf8");
-}
-
-async function writeDummyPdf(targetPath, label, originalName) {
-  const now = new Date();
-  const lines = [
-    "SIMULIERTE PDF",
-    `Dokument: ${label}`,
-    `Original: ${originalName || "-"}`,
-    `Zeit: ${now.toISOString()}`,
-  ];
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await fs.writeFile(targetPath, makeSimplePdf(lines));
-}
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, TMP_UPLOAD_DIR),
@@ -1979,9 +1971,17 @@ app.post(
         return res.status(400).json({ ok: false, error: "Alle drei Dateien sind erforderlich." });
       }
 
-      await writeDummyPdf(PDF.fibu, "Fibu", fibuIn.originalname);
-      await writeDummyPdf(PDF.stamm, "Stammanteilbewertung", stammIn.originalname);
-      await writeDummyPdf(PDF.verlust, "Verlusttabelle", verlustIn.originalname);
+      const outDir = path.join(__dirname, "data", "converted");
+      await fs.mkdir(outDir, { recursive: true });
+
+      const fibuPdf = await convertAnyToPdf(fibuIn.path, outDir);
+      const stammPdf = await convertAnyToPdf(stammIn.path, outDir);
+      const verlustPdf = await convertAnyToPdf(verlustIn.path, outDir);
+
+      await fs.mkdir(PDF_DIR, { recursive: true });
+      await fs.copyFile(fibuPdf, PDF.fibu);
+      await fs.copyFile(stammPdf, PDF.stamm);
+      await fs.copyFile(verlustPdf, PDF.verlust);
 
       await dbCreateUploadMeta({
         id: makeId("upl"),
@@ -2020,54 +2020,144 @@ app.post(
         fs.unlink(fibuIn.path),
         fs.unlink(stammIn.path),
         fs.unlink(verlustIn.path),
+        fs.unlink(fibuPdf).catch(() => {}),
+        fs.unlink(stammPdf).catch(() => {}),
+        fs.unlink(verlustPdf).catch(() => {}),
       ]);
 
-      return res.json({ ok: true, simulated: true });
+      return res.json({ ok: true, simulated: false });
     } catch (e) {
       return res.status(500).json({ ok: false, error: String(e) });
     }
   }
 );
 
-function singleUploadRoute(route, targetPath, label, docType) {
-  app.post(route, upload.single("file"), async (req, res) => {
-    try {
-      const companyId = String(req.body?.companyId || req.query?.companyId || "").trim();
-      const projectId = String(req.body?.projectId || req.query?.projectId || "").trim() || null;
 
-      if (!companyId) {
-        return res.status(400).json({ ok: false, error: "companyId fehlt" });
-      }
+app.post("/api/upload/fibu", upload.single("file"), async (req, res) => {
+  try {
+    const companyId = String(req.body?.companyId || req.query?.companyId || "").trim();
+    const projectId = String(req.body?.projectId || req.query?.projectId || "").trim() || null;
 
-      if (!req.file) {
-        return res.status(400).json({ ok: false, error: "kein File" });
-      }
-
-      await writeDummyPdf(targetPath, label, req.file.originalname);
-
-      await dbCreateUploadMeta({
-        id: makeId("upl"),
-        companyId,
-        projectId,
-        docType,
-        originalName: req.file.originalname,
-        storedPath: targetPath,
-        fileSize: req.file.size ?? null,
-        mimeType: req.file.mimetype ?? null,
-      });
-
-      await Promise.allSettled([fs.unlink(req.file.path)]);
-
-      res.json({ ok: true, simulated: true });
-    } catch (e) {
-      res.status(500).json({ ok: false, error: String(e) });
+    if (!companyId) {
+      return res.status(400).json({ ok: false, error: "companyId fehlt" });
     }
-  });
-}
 
-singleUploadRoute("/api/upload/fibu", PDF.fibu, "Fibu", "fibu");
-singleUploadRoute("/api/upload/stamm", PDF.stamm, "Stammanteilbewertung", "stamm");
-singleUploadRoute("/api/upload/verlust", PDF.verlust, "Verlusttabelle", "verlust");
+    if (!req.file) {
+      return res.status(400).json({ ok: false, error: "kein File" });
+    }
+
+    const outDir = path.join(__dirname, "data", "converted");
+    await fs.mkdir(PDF_DIR, { recursive: true });
+    await fs.mkdir(outDir, { recursive: true });
+
+    const pdf = await convertAnyToPdf(req.file.path, outDir);
+    await fs.copyFile(pdf, PDF.fibu);
+
+    await dbCreateUploadMeta({
+      id: makeId("upl"),
+      companyId,
+      projectId,
+      docType: "fibu",
+      originalName: req.file.originalname,
+      storedPath: PDF.fibu,
+      fileSize: req.file.size ?? null,
+      mimeType: req.file.mimetype ?? null,
+    });
+
+    await Promise.allSettled([
+      fs.unlink(req.file.path),
+      fs.unlink(pdf).catch(() => {}),
+    ]);
+
+    res.json({ ok: true, simulated: false });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+app.post("/api/upload/verlust", upload.single("file"), async (req, res) => {
+  try {
+    const companyId = String(req.body?.companyId || req.query?.companyId || "").trim();
+    const projectId = String(req.body?.projectId || req.query?.projectId || "").trim() || null;
+
+    if (!companyId) {
+      return res.status(400).json({ ok: false, error: "companyId fehlt" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ ok: false, error: "kein File" });
+    }
+
+    const outDir = path.join(__dirname, "data", "converted");
+    await fs.mkdir(PDF_DIR, { recursive: true });
+    await fs.mkdir(outDir, { recursive: true });
+
+    const pdf = await convertAnyToPdf(req.file.path, outDir);
+    await fs.copyFile(pdf, PDF.verlust);
+
+    await dbCreateUploadMeta({
+      id: makeId("upl"),
+      companyId,
+      projectId,
+      docType: "verlust",
+      originalName: req.file.originalname,
+      storedPath: PDF.verlust,
+      fileSize: req.file.size ?? null,
+      mimeType: req.file.mimetype ?? null,
+    });
+
+    await Promise.allSettled([
+      fs.unlink(req.file.path),
+      fs.unlink(pdf).catch(() => {}),
+    ]);
+
+    res.json({ ok: true, simulated: false });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) });
+  }
+});
+
+app.post("/api/upload/stamm", upload.single("file"), async (req, res) => {
+  try {
+    const companyId = String(req.body?.companyId || req.query?.companyId || "").trim();
+    const projectId = String(req.body?.projectId || req.query?.projectId || "").trim() || null;
+
+    if (!companyId) {
+      return res.status(400).json({ ok: false, error: "companyId fehlt" });
+    }
+
+    if (!req.file) {
+      return res.status(400).json({ ok: false, error: "kein File" });
+    }
+
+    const outDir = path.join(__dirname, "data", "converted");
+    await fs.mkdir(PDF_DIR, { recursive: true });
+    await fs.mkdir(outDir, { recursive: true });
+
+    const pdf = await convertAnyToPdf(req.file.path, outDir);
+    await fs.copyFile(pdf, PDF.stamm);
+
+    await dbCreateUploadMeta({
+      id: makeId("upl"),
+      companyId,
+      projectId,
+      docType: "stamm",
+      originalName: req.file.originalname,
+      storedPath: PDF.stamm,
+      fileSize: req.file.size ?? null,
+      mimeType: req.file.mimetype ?? null,
+    });
+
+    await Promise.allSettled([
+      fs.unlink(req.file.path),
+      fs.unlink(pdf).catch(() => {}),
+    ]);
+
+    res.json({ ok: true, simulated: false });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: String(e) });
+  }
+});
 
 
 app.post("/api/reset", async (_req, res) => {
@@ -2228,11 +2318,11 @@ app.post("/api/finalize", async (req, res) => {
     ]);
 
     await dbFinishRun(runId, "success", {
-      simulated: true,
+      simulated: false,
       template,
     });
 
-    return res.json({ ok: true, simulated: true, template, runId });
+    return res.json({ ok: true, simulated: false, template, runId });
   } catch (e) {
     await dbFinishRun(runId, "failed", { error: String(e) }).catch(() => {});
     return res.status(500).json({ ok: false, error: String(e), runId });

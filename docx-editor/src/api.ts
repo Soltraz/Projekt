@@ -55,12 +55,16 @@ export async function deleteCompany(id: string, purgeVars = false) {
   );
 }
 
-export async function uploadAll(files: {
-  fibu: File;
-  stamm: File;
-  verlust: File;
-}) {
+export async function uploadAll(
+  companyId: string,
+  files: {
+    fibu: File;
+    stamm: File;
+    verlust: File;
+  }
+) {
   const fd = new FormData();
+  fd.append("companyId", companyId);
   fd.append("fibu", files.fibu);
   fd.append("stamm", files.stamm);
   fd.append("verlust", files.verlust);
@@ -74,10 +78,12 @@ export async function uploadAll(files: {
   try {
     data = await r.json();
   } catch {}
+
   if (!r.ok) {
     const msg = data?.error || r.statusText || "upload failed";
     throw new Error(`${API}/api/upload → ${r.status} ${msg}`);
   }
+
   return data;
 }
 
@@ -117,9 +123,10 @@ export async function getUploadState() {
   }>(`${API}/api/upload/state`);
 }
 
-export async function runExtract(companyId: string) {
+export async function runExtract(companyId: string, projectId: string) {
   return jPOST<{ ok: boolean }>(`${API}/api/start`, {
     companyId,
+    projectId,
     phase: "extract",
   });
 }
@@ -150,5 +157,20 @@ export async function searchCompanies(
 
   return jGET<CompanyHit[]>(
     `${API}/api/search?name=${encodeURIComponent(term)}`
+  );
+}
+
+
+export async function updateMissing(
+  companyId: string,
+  projectId: string,
+  values: Record<string, string>
+) {
+  return jPOST(
+    `${API}/api/missing/update?companyId=${encodeURIComponent(companyId)}&projectId=${encodeURIComponent(projectId)}`,
+    {
+      values,
+      timestamp: new Date().toISOString(),
+    }
   );
 }
