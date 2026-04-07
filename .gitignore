@@ -12,6 +12,7 @@ Desktop.ini
 
 .idea/
 *.iml
+.history/
 
 ########################################
 # Logs
@@ -32,6 +33,7 @@ pnpm-debug.log*
 **/.cache/
 **/.parcel-cache/
 **/.eslintcache
+**/.vite/
 
 ########################################
 # TypeScript
@@ -45,47 +47,52 @@ pnpm-debug.log*
 **/.env.*
 !**/.env.example
 
-# Vite lokale Env
+# Lokale Vite / Dev-Varianten
 **/.env.local
 **/.env.*.local
 
 ########################################
 # Runtime / Uploads / Generated data
 ########################################
-# Backend temp uploads
+########################################
+# Runtime / Uploads / Generated data
+########################################
 zefix-vars/tmp_uploads/
 zefix-vars/uploads/
 zefix-vars/tmp/
 zefix-vars/temp/
 
-# Backend gespeicherte Laufzeitdaten (im Prototyp generated)
-zefix-vars/data/
-zefix-vars/data/**
+# data: alles ignorieren, aber Quellcode in data/convertfiles behalten
+zefix-vars/data/*
+!zefix-vars/data/convertfiles/
+!zefix-vars/data/convertfiles/**
 
-# Falls du spaeter bewusst Demo-Daten versionieren willst:
-# -> dann die beiden Zeilen oben entfernen und stattdessen selektiv ignorieren (z.B. nur missing/vars)
+# generierte / lokale Laufzeitdaten weiterhin ignorieren
+zefix-vars/data/converted/
+zefix-vars/data/debug/
+zefix-vars/data/missing/
+zefix-vars/data/uploads/
+zefix-vars/data/vars/
 
+# lokale JSON-Daten nicht pushen
+zefix-vars/data/*.json
+
+# erzeugte PDF-Ablagen
+zefix-vars/public/marzo/data/
+
+# bewusst versionierte Beispiele / Setup-Dateien zulassen
+!zefix-vars/examples/
+!zefix-vars/examples/**
+!zefix-vars/sql/
+!zefix-vars/sql/**
 ########################################
 # Generated documents / exports
 ########################################
-# App erzeugte PDFs/Exports
 **/*.pdf
 **/*.docx
 **/*.zip
 
-# Falls du ZIPs im Repo behalten willst, loesche die naechste Zeile:
-.zip
 
-# Spezifische Output Ordner (falls PDFs nicht global ignoriert werden sollen)
-# zefix-vars/public/marzo/data/
-
-########################################
-# Test artifacts
-########################################
-coverage/
-.nyc_output/
-playwright-report/
-test-results/
 
 ########################################
 # Misc
@@ -95,3 +102,4 @@ test-results/
 *.bak
 *.old
 *.orig
+*.tmp

@@ -42,12 +42,14 @@ fs.mkdir(PDF_DIR, { recursive: true }).catch(() => {});
 
 
 const running = new Set(); // companyId
+
 function lock(companyId) {
   if (!companyId) return true;
   if (running.has(companyId)) return false;
   running.add(companyId);
   return true;
 }
+
 function unlock(companyId) {
   if (!companyId) return;
   running.delete(companyId);
@@ -836,6 +838,9 @@ async function triggerWorkflow({
       fibu: PDF.fibu,
       stamm: PDF.stamm,
       verlust: PDF.verlust,
+      fibuUrl: `${APP_BASE_URL}/marzo/data/Fibu.pdf`,
+      stammUrl: `${APP_BASE_URL}/marzo/data/Stammanteilbewertung.pdf`,
+      verlustUrl: `${APP_BASE_URL}/marzo/data/Verlusttabelle.pdf`,
     },
     callback: {
       url: `${APP_BASE_URL}/api/workflow/callback`,
